@@ -136,6 +136,7 @@ class MusicKitGui:
                 self.items.append(Pending(core.NewSong.from_json(j)))
         self.editing = None    # item whose names are being edited
         self.normalize = settings.get("normalize", True)
+        self.unlock_off = settings.get("unlock_off", False)
         self.job = None
         self.dialog = None
         self.form = {"path": "", "title": "", "artist": "", "album": ""}
@@ -154,6 +155,7 @@ class MusicKitGui:
     # ------------------------------------------------------------------ state
     def save_settings(self):
         self.settings.update({"iso": self.iso_path, "out": self.out_path, "normalize": self.normalize,
+                              "unlock_off": self.unlock_off,
                               "queue": [p.song.to_json() for p in self.new_items()],
                               "list": [_item(it).to_json() for it in self.items] if self.disc else None,
                               "list_iso": self.disc.path if self.disc else None})
@@ -174,6 +176,33 @@ class MusicKitGui:
 
     def changed(self):
         return self.disc is not None and not self.disc.is_unchanged(self.core_items())
+
+    def unlock_pending(self):
+        return bool(self.unlock_off and self.disc is not None and not self.disc.unlocked)
+
+    def can_save(self):
+        """Song list changed, or the switch-off unlock alone."""
+        return self.changed() or self.unlock_pending()
+
+    def size_plan(self):
+        """Projected size of the new image (cached per song list; None if it cannot be computed)."""
+        if self.disc is None:
+            return None
+        items = self.core_items()
+        key = (id(self.disc), self.unlock_pending(),
+               json.dumps([it.to_json() for it in items], sort_keys=True, ensure_ascii=False))
+        if getattr(self, "_size_key", None) != key:
+            self._size_key = key
+            est = {}
+            for k, it in enumerate(self.items):
+                info = getattr(it, "info", None)
+                if info is not None and (isinstance(it, Pending) or it.audio):
+                    est[k] = info.duration
+            try:
+                self._size = self.disc.size_plan(items, self.unlock_pending(), est)
+            except Exception:
+                self._size = None
+        return self._size
 
     def reset_list(self, keep_new=True):
         new = self.new_items() if keep_new else []
@@ -392,7 +421,7 @@ class MusicKitGui:
 
     # ------------------------------------------------------------------ build
     def build(self):
-        if not self.changed():
+        if not self.can_save():
             return
         if os.path.abspath(self.out_path) == os.path.abspath(self.iso_path):
             self.log.error("choose a different output file - the source ISO is never overwritten")
@@ -400,12 +429,15 @@ class MusicKitGui:
         items = self.core_items()
         out = self.out_path
         disc = self.disc
+        unlock = self.unlock_pending()
         w = disc.save_warning(items)
         if w:
             self.log(w)
 
         def run(job):
-            rep = disc.build_list(items, out, self.normalize, job.update)
+            rep = disc.build_list(items, out, self.normalize, job.update, unlock_off=unlock)
+            if rep["unlocked"]:
+                self.log("every song can be switched OFF in the Song Manager")
             if "target_lufs" in rep:
                 self.log("loudness target %.1f LUFS (median of the original songs)" % rep["target_lufs"])
             for s in rep["songs"]:
@@ -470,6 +502,9 @@ class MusicKitGui:
             imgui.text_colored(_col(GREEN), "Burnout Revenge %s - %d songs on the disc%s" %
                                (d.region, d.count, " (%d added or changed earlier with MusicKit)" % (d.count - n_orig)
                                 if d.count != n_orig else ""))
+            if d.count > core.MAX_SONGS:
+                imgui.text_colored(_col(YELLOW), "! More than %d songs: remove some before saving (shuffle mode "
+                                                 "supports %d at most)." % (core.MAX_SONGS, core.MAX_SONGS))
             imgui.text_colored(_col(GREY), "The ISO is only read; it is never modified.")
             imgui.text_colored(_col(GREY), "PCSX2 game CRC %08X is kept, so PCSX2 patches (widescreen ...) still apply."
                                % d.crc)
@@ -611,25 +646,31 @@ class MusicKitGui:
             imgui.text_colored(_col(RED), "The output must be a new file (the source ISO is never overwritten).")
         elif self.out_path and os.path.exists(self.out_path):
             imgui.text_colored(_col(YELLOW), "This file exists and will be replaced.")
-        ready = self.changed() and self.out_path and not same and not self.busy()
+        ready = self.can_save() and self.out_path and not same and not self.busy()
         imgui.begin_disabled(not ready)
         imgui.push_style_color(imgui.Col_.button, _col((0.75, 0.42, 0.08, 1.0)))
         if imgui.button("Save new ISO", imgui.ImVec2(200, 36)):
             self.build()
         imgui.pop_style_color()
         imgui.end_disabled()
+        size = self.size_plan()
         if self.changed():
             enc = [it for it in self.items if isinstance(it, Pending) or it.audio]
-            mb = sum(it.info.duration * 36.6 / 1024 for it in enc if getattr(it, "info", None))
             removed = self.disc.count - len({it.src for it in self.items if isinstance(it, core.SongRef)})
-            imgui.text_colored(_col(GREY), "%d songs: %d new, %d new audio, %d removed; ~%.2f GB" % (
+            imgui.text_colored(_col(GREY), "%d songs: %d new, %d new audio, %d removed%s" % (
                 len(self.items), len(self.new_items()), len(enc) - len(self.new_items()), removed,
-                os.path.getsize(self.iso_path) / 1e9 + 0.19 + mb / 1000))
+                "; %.2f GB" % (size["bytes"] / 1e9) if size else ""))
             w = self.disc.save_warning(self.core_items())
             if w:
                 imgui.push_text_wrap_pos(0)
                 imgui.text_colored(_col(YELLOW), "! " + w)
                 imgui.pop_text_wrap_pos()
+        elif self.unlock_pending():
+            imgui.text_colored(_col(GREY), "Song list unchanged: only \"Allow switching any song OFF\" will be applied.")
+        if size:
+            imgui.push_text_wrap_pos(0)
+            imgui.text_colored(_col(GREY if size["fits"] else YELLOW), ("" if size["fits"] else "! ") + size["text"])
+            imgui.pop_text_wrap_pos()
         if self.job and (not self.job.done or self.job.title == "save new ISO"):
             imgui.progress_bar(self.job.progress if not self.job.done else 1.0, imgui.ImVec2(-1, 0),
                                self.job.message if not self.job.done else ("done" if self.job.ok else "failed"))
@@ -737,6 +778,13 @@ class MusicKitGui:
             _, self.normalize = imgui.checkbox("Match loudness to the original songs", self.normalize)
             _tip("EBU R128 loudness of every new song is set to the median of the original soundtrack\n"
                  "(constant gain, -1 dBTP ceiling).")
+            if self.disc and self.disc.unlocked:
+                imgui.text_colored(_col(GREEN), "This disc already lets you switch every song OFF.")
+            else:
+                _, self.unlock_off = imgui.checkbox("Allow switching any song OFF", self.unlock_off)
+                _tip("In the original game the Song Manager only lets you switch a song OFF after it has played\n"
+                     "to the end once. With this option every song can be switched OFF right away.\n"
+                     "Can also be saved on its own, without changing songs.")
             if self.disc and imgui.button("Measure original loudness"):
                 def run(job):
                     r = self.disc.reference_loudness(job.update)

@@ -11,7 +11,9 @@
   musickit remove-song <n> [--iso X]             remove song n from the disc (originals too)
   musickit move <n> <up|down|position> [--iso X] move song n
   musickit reset [--project P]                   forget all pending changes
-  musickit build [--iso X] [--out Y] [--project P] [--no-normalize]
+  musickit build [--iso X] [--out Y] [--project P] [--no-normalize] [--unlock-off]
+                                                 --unlock-off: every song can be switched OFF in the Song Manager
+                                                 (the game normally waits until a song was heard once)
   musickit export <n> <out.wav> [--iso X]        decode an existing song to WAV
   musickit validate <source.iso> <output.iso>    check an output image against its source
 Song numbers n refer to the pending list shown by `queue` (the same as `list` until something changed).
@@ -126,6 +128,7 @@ def main(argv=None):
     p = sub.add_parser("reset"); p.add_argument("--project", default=DEFAULT_PROJECT)
     p = sub.add_parser("build"); p.add_argument("--iso"); p.add_argument("--out"); p.add_argument("--project", default=DEFAULT_PROJECT)
     p.add_argument("--no-normalize", action="store_true")
+    p.add_argument("--unlock-off", action="store_true")
     p = sub.add_parser("validate"); p.add_argument("source"); p.add_argument("output")
     p = sub.add_parser("export"); p.add_argument("n", type=int); p.add_argument("out"); p.add_argument("--iso")
     a = ap.parse_args(argv)
@@ -136,7 +139,8 @@ def main(argv=None):
         return gui.main(getattr(a, "shot", None), demo)
     if a.cmd == "list":
         d = core.Disc(a.iso or load_project(DEFAULT_PROJECT)["iso"])
-        print("%d songs (%s)" % (d.count, "MusicKit-patched" if d.patched else "original"))
+        print("%d songs (%s%s)" % (d.count, "MusicKit-patched" if d.patched else "original",
+                                   ", every song can be switched OFF" if d.unlocked else ""))
         for s in d.songs:
             print("%3d  %-28s %-45s %-30s %d:%02d" % (s.index + 1, s.artist[:28], s.title[:45], s.album[:30],
                                                      int(s.duration) // 60, int(s.duration) % 60))
@@ -250,13 +254,18 @@ def main(argv=None):
         out = a.out or core.default_output(src)
         d = core.Disc(src)
         items = pending(j, d)
-        if d.is_unchanged(items):
-            raise SystemExit("nothing to do: add, replace, edit, remove or move songs first")
+        unlock = a.unlock_off and not d.unlocked
+        if d.is_unchanged(items) and not unlock:
+            raise SystemExit("nothing to do: add, replace, edit, remove or move songs first (or use --unlock-off)")
         w = d.save_warning(items)
         if w:
             print("! " + w)
-        rep = d.build_list(items, out, normalize=not a.no_normalize, progress=_progress)
+        size = d.size_plan(items, unlock)
+        print(("" if size["fits"] else "! ") + size["text"])
+        rep = d.build_list(items, out, normalize=not a.no_normalize, progress=_progress, unlock_off=unlock)
         print()
+        if rep["unlocked"]:
+            print("every song can be switched OFF in the Song Manager")
         if "target_lufs" in rep:
             print("target loudness %.1f LUFS (median of the original songs)" % rep["target_lufs"])
         for s in rep["songs"]:

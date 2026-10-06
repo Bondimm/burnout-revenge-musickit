@@ -102,6 +102,7 @@ def validate(src_path, out_path, log=print, hash_all=True):
     d = core.Disc(out_path)
     log("version: %s" % d.region)
     log("songs: %d -> %d" % (s0.count, d.count))
+    log("switch any song OFF: %s" % ("yes" if d.unlocked else "no (original behaviour)"))
     c_src, c_out = elfpatch.crc(s0.elf), elfpatch.crc(d.elf)
     log("PCSX2 game CRC: %08X -> %08X %s" % (c_src, c_out, "(unchanged)" if c_src == c_out else "CHANGED"))
     if c_src != c_out:
@@ -113,6 +114,8 @@ def validate(src_path, out_path, log=print, hash_all=True):
         if clash:
             ok = False
     log("note: the modified disc can never match the redump MD5 (expected for any modified image)")
+    size = out.volume_sectors * iso.SECTOR
+    log(("" if size <= core.DVD5_SECTORS * iso.SECTOR else "warning: ") + core.capacity_text(size))
     ok = check_songs(s0, d, log) and ok
     log("RESULT: %s" % ("OK" if ok else "FAILED"))
     return ok

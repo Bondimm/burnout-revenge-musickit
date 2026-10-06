@@ -30,7 +30,11 @@ RWS_FILES = ("/TRACKS/_EATRAX0.RWS", "/TRACKS/_EATRAX1.RWS")
 SPLIT = 20
 MARK = b"MusicKit"     # first 8 bytes of the RWS segment UUID of songs MusicKit encoded
 MAX_TEXT = 60          # longest original title is 59 characters
-MAX_SONGS = 100        # keeps the _EATRAX1.RWS header below 0x2000 bytes (the size MOVIES.RWS uses)
+MAX_SONGS = elfpatch.MAX_SONGS   # 95: the shuffle order array limit (see elfpatch); also keeps the
+                                 # _EATRAX1.RWS header below 0x2000 bytes (the size MOVIES.RWS uses)
+DVD5_SECTORS = 2295104   # single-layer DVD (4,700,372,992 bytes)
+ADPCM_BYTES_PER_SEC = 32000 * 2 * 16 / 28    # stereo PS-ADPCM at 32 kHz (~36.6 KB/s)
+TYPICAL_SONG_SECONDS = 210
 DEFAULT_ISO = ""  # no default: the user picks their own disc image
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
 
@@ -148,6 +152,7 @@ class Disc:
         except Exception as exc:
             raise ValueError("unsupported game executable %s: %s" % (name, exc))
         self.patched = elfpatch.is_patched(self.elf)
+        self.unlocked = elfpatch.is_unlocked(self.elf)
         self.langs = tuple(l for l in LANGS if "/LANGUAGE/STRINGS/MAIN%s.BIN" % l in self.img.entries)
         if not self.langs:
             raise ValueError("no string tables found")
@@ -252,26 +257,37 @@ class Disc:
                 "menus/races per song): position(s) %s will use the setting saved for the song that was there "
                 "before. Check the Song Manager after loading your save." % _ranges(pos))
 
-    def build(self, new_songs, out_path, normalize=True, progress=None):
-        """Add `new_songs` after the current songs and write a new ISO. Returns a report dict."""
-        if not new_songs:
-            raise ValueError("no songs to add")
-        return self.build_list(self.current_list() + list(new_songs), out_path, normalize, progress)
+    def build(self, new_songs, out_path, normalize=True, progress=None, unlock_off=False):
+        """Add `new_songs` after the current songs and write a new ISO. Returns a report dict.
+        unlock_off: see build_list(); can be the only change."""
+        if not new_songs and not (unlock_off and not self.unlocked):
+            raise ValueError("nothing to do: add songs or choose the switch-off unlock")
+        return self.build_list(self.current_list() + list(new_songs), out_path, normalize, progress, unlock_off)
 
-    def build_list(self, items, out_path, normalize=True, progress=None):
+    def build_list(self, items, out_path, normalize=True, progress=None, unlock_off=False):
         """Write a new ISO whose songs are `items` in this order: SongRef (a song of this disc, optionally with
-        new audio / names) or NewSong (added). Returns a report dict."""
+        new audio / names) or NewSong (added). Returns a report dict.
+        unlock_off: let the Song Manager switch every song OFF (the game normally refuses OFF for songs not
+        heard to the end yet). With an unchanged song list only the executable changes."""
         prog = progress or (lambda f, m: None)
         if os.path.abspath(out_path) == os.path.abspath(self.path):
             raise ValueError("the output must be a new file (the source ISO is never modified)")
-        reps, report = self.replacements(items, normalize, prog)
+        reps, report = self.replacements(items, normalize, prog, unlock_off)
         placed = self.img.build(out_path, reps, lambda f, m: prog(0.55 + 0.45 * f, m))
         report["placed"] = {k: v for k, v in placed.items()}
         return report
 
-    def replacements(self, items, normalize=True, progress=None):
-        """The changed files {iso path: bytes or iso.Parts} for the song list `items`, and a report dict."""
+    def replacements(self, items, normalize=True, progress=None, unlock_off=False, estimate=None):
+        """The changed files {iso path: bytes or iso.Parts} for the song list `items`, and a report dict.
+        estimate: {position: seconds} (missing positions are probed) - nothing is encoded, new audio becomes
+        placeholder parts of the size the encoder will produce (for size_plan())."""
         prog = progress or (lambda f, m: None)
+        unlock_off = unlock_off and not self.unlocked
+        if unlock_off and self.is_unchanged(items):      # unlock only: the executable is the one changed file
+            elf = elfpatch.unlock(self.elf)
+            assert elfpatch.crc(elf) == self.crc
+            return {self.elf_path: elf}, {"songs": [], "save_shift": [], "unlocked": True,
+                                          "total_songs": self.count, "removed": 0}
         total = len(items)
         if total < 1:
             raise ValueError("at least one song must stay on the disc")
@@ -280,10 +296,10 @@ class Disc:
         for it in items:
             if isinstance(it, SongRef) and not 0 <= it.src < self.count:
                 raise ValueError("song %d is not on this disc" % (it.src + 1))
-        report = {"songs": [], "save_shift": self.save_shift(items)}
+        report = {"songs": [], "save_shift": self.save_shift(items), "unlocked": unlock_off or self.unlocked}
         target = None
         enc = [k for k, it in enumerate(items) if isinstance(it, NewSong) or it.audio]
-        if normalize and enc:
+        if normalize and enc and estimate is None:
             ref = self.reference_loudness(lambda f, m: prog(0.15 * f, m))
             target = ref["median_lufs"]
             report["target_lufs"] = target
@@ -291,7 +307,13 @@ class Disc:
         block = self.headers[0].block_size
         segs = []
         for k, it in enumerate(items):
-            if k in enc:
+            if k in enc and estimate is not None:
+                sec = estimate.get(k)
+                if sec is None:
+                    sec = audio.AudioInfo(it.path if isinstance(it, NewSong) else it.audio).duration
+                size, usable = self.encoded_size(sec)
+                segs.append((("", 0, size), size, usable, MARK + bytes(8), self.headers[1].segments[-1].info))
+            elif k in enc:
                 path = it.path if isinstance(it, NewSong) else it.audio
                 title = it.title if isinstance(it, NewSong) else it.text(self, self.langs[0], "title")
                 prog(0.15 + 0.35 * enc.index(k) / len(enc), "encoding %s" % (title or os.path.basename(path)))
@@ -354,13 +376,36 @@ class Disc:
                 for sid in ("EATraxSongTitle%d", "EATraxArtist%d", "EATraxAlbum%d"):
                     t.delete(sid % n)
             reps["/LANGUAGE/STRINGS/MAIN%s.BIN" % l] = t.build()
-        # 4. executable: song count + table (flags travel with their song)
+        # 4. executable: song count + table (flags travel with their song), optional unlock
         flags = [7 if isinstance(it, NewSong) else self.songs[it.src].flags for it in items]
-        reps[self.elf_path] = elfpatch.set_table(self.elf, flags)
+        elf = elfpatch.set_table(self.elf, flags)
+        if unlock_off:
+            elf = elfpatch.unlock(elf)
+        reps[self.elf_path] = elf
         assert elfpatch.crc(reps[self.elf_path]) == self.crc   # PCSX2 game CRC unchanged
         report["total_songs"] = total
         report["removed"] = self.count - len({it.src for it in items if isinstance(it, SongRef)})
         return reps, report
+
+    def encoded_size(self, seconds):
+        """(padded payload bytes, usable bytes) of a song of `seconds` encoded for the game."""
+        block = self.headers[0].block_size
+        per_ch = (int(round(seconds * 32000)) + 27) // 28 * 16
+        half = block // 2
+        return (per_ch + half - 1) // half * block, per_ch * 2
+
+    def size_plan(self, items, unlock_off=False, estimate=None):
+        """Projected output image for the song list `items` without encoding anything:
+        {"bytes", "sectors", "fits" (single-layer DVD), "room_bytes", "text"}."""
+        if self.is_unchanged(items) and not (unlock_off and not self.unlocked):
+            sectors = self.img.volume_sectors
+        else:
+            reps, _ = self.replacements(items, normalize=False, unlock_off=unlock_off, estimate=estimate or {})
+            sectors = self.img.plan({k: len(v) for k, v in reps.items()})[1]
+        size = sectors * iso.SECTOR
+        room = DVD5_SECTORS * iso.SECTOR - size
+        return {"bytes": size, "sectors": sectors, "fits": room >= 0, "room_bytes": max(room, 0),
+                "text": capacity_text(size, max(room, 0))}
 
     def _boot_elf(self):
         try:
@@ -379,6 +424,18 @@ class Disc:
             hs = int.from_bytes(head[0x10:0x14], "little")
             f.seek(e.lsn * iso.SECTOR)
             return f.read(0x18 + hs + 12)
+
+
+def capacity_text(size_bytes, room_bytes=None):
+    """One line about the single-layer DVD limit for an image of `size_bytes` (room_bytes: free room left)."""
+    if size_bytes > DVD5_SECTORS * iso.SECTOR:
+        return ("The new image will be %.2f GB - larger than a single-layer DVD (4.7 GB). It works in emulators "
+                "(PCSX2), but it can't be burned to a normal DVD for a real PS2." % (size_bytes / 1e9))
+    room = DVD5_SECTORS * iso.SECTOR - size_bytes if room_bytes is None else room_bytes
+    minutes = room / ADPCM_BYTES_PER_SEC / 60
+    return ("%.2f GB - fits on a single-layer DVD, with room for about %d more minutes of music (~%d songs of "
+            "%d:%02d)." % (size_bytes / 1e9, minutes, minutes * 60 // TYPICAL_SONG_SECONDS,
+                          TYPICAL_SONG_SECONDS // 60, TYPICAL_SONG_SECONDS % 60))
 
 
 def _ranges(nums):

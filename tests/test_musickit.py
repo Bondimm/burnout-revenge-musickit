@@ -100,10 +100,10 @@ def _elf_versions():
     out = []
     p = os.path.join(DISC, "SLES_535.07")
     if os.path.exists(p):
-        out.append(("PAL", open(p, "rb").read(), 0x7E83CC5B, 0x460640, 0x4A3680, 0x4F3580, 0))
+        out.append(("PAL", open(p, "rb").read(), 0x7E83CC5B, 0x460640, 0x4A3680, 0x4F3580, 0, 0))
     if os.path.exists(USA_ISO):
         out.append(("USA", iso.IsoImage(USA_ISO).read_file("/SLUS_212.42"), 0xD224D348, 0x4604C0, 0x4A3500,
-                    0x4F3300, -0x80))
+                    0x4F3300, -0x80, 0x28))
     return out
 
 
@@ -112,11 +112,12 @@ def test_elf_patch():
     if not vers:
         import pytest
         pytest.skip("no executable")
-    for name, d, crc, playlist, table, profile, delta in vers:
+    for name, d, crc, playlist, table, profile, delta, row_delta in vers:
         assert elfpatch.crc(d) == crc
         lay = elfpatch.Layout(d)
         assert (lay.playlist, lay.table_new, lay.profile) == (playlist, table, profile), name
-        assert all(v == delta for v in lay.delta.values()), name
+        assert all(v == delta for g, v in lay.delta.items() if g != "trax_row"), name
+        assert lay.delta["trax_row"] == row_delta, name
         out = elfpatch.patch(d, 45)
         assert elfpatch.crc(out) == crc, name            # PCSX2 CRC kept
         e = elfpatch.Elf(out)
@@ -133,6 +134,31 @@ def test_elf_patch():
         assert d[a[1]:a[1] + a[4]] == out[b[1]:b[1] + b[4]]   # second segment moved but unchanged
         out2 = elfpatch.extend(out, 47)
         assert elfpatch.read_song_count(out2) == 47 and elfpatch.crc(out2) == crc and len(out2) == len(out)
+
+
+def test_unlock_off():
+    """The switch-off unlock: two words, any order with patch/extend, PCSX2 CRC kept, idempotent."""
+    vers = _elf_versions()
+    if not vers:
+        import pytest
+        pytest.skip("no executable")
+    for name, d, crc, *_ in vers:
+        lay = elfpatch.Layout(d)
+        assert [lay.elf.r32(va) for va, _, _, _ in lay.unlock_sites()] == [0x32020008, 0x30420001], name
+        assert not elfpatch.is_unlocked(d)
+        u = elfpatch.unlock(d)
+        assert elfpatch.crc(u) == crc and elfpatch.is_unlocked(u), name
+        assert elfpatch.unlock(u) == u                                   # idempotent
+        e, eu = elfpatch.Elf(d), elfpatch.Elf(u)
+        sites = {va for va, _, _, _ in lay.unlock_sites()}
+        s = e.phdrs()[0]
+        diff = [s[2] + i for i in range(0, s[4], 4) if e.r32(s[2] + i) != eu.r32(s[2] + i)]
+        assert set(diff) == sites, name                                  # nothing else in the code changed
+        pu = elfpatch.unlock(elfpatch.patch(d, 43))
+        up = elfpatch.patch(u, 43)
+        for x in (pu, up, elfpatch.extend(pu, 45)):
+            assert elfpatch.crc(x) == crc and elfpatch.is_unlocked(x) and elfpatch.is_patched(x), name
+        assert any(lo <= max(sites) < hi for lo, hi in elfpatch.touched_ranges(pu))
 
 
 def test_udf_tag_crc():
@@ -159,6 +185,17 @@ def test_build_iso_end_to_end():
     song = core.NewSong(os.path.join(tmp, "test_chords_44k_24bit.flac"), "Chord Test", "MusicKit", "Demo")
     d.build([song], out)
     assert validate.validate(ISO, out, log=lambda *a: None)
+    o = core.Disc(out)
+    assert not o.unlocked
+    o.img.f.close()
+    os.remove(out)
+    # unlock only (no new songs): only the executable changes
+    rep = d.build([], out, unlock_off=True)
+    assert rep["unlocked"] and rep["total_songs"] == d.count
+    assert validate.validate(ISO, out, log=lambda *a: None)
+    o = core.Disc(out)
+    assert o.unlocked and o.count == d.count and not o.patched
+    o.img.f.close()
     os.remove(out)
 
 
@@ -262,6 +299,9 @@ def test_minimum_one_song_and_limits():
             d.replacements([], normalize=False)
         with pytest.raises(ValueError):
             d.replacements([core.SongRef(0)] * (core.MAX_SONGS + 1), normalize=False)
+        assert core.MAX_SONGS == elfpatch.MAX_SONGS == 95
+        with pytest.raises(ValueError):
+            elfpatch.set_table(d.elf, [7] * 96)
 
 
 def test_replace_audio_keeps_slot():
@@ -281,13 +321,64 @@ def test_replace_audio_keeps_slot():
         assert abs(len(pcm) / 32000.0 - 20.0) < 0.1
 
 
+def test_unlock_with_song_list():
+    """unlock_off with an unchanged list changes only the executable; with a changed list it rides along."""
+    for p in _isos():
+        d = core.Disc(p)
+        reps, rep = d.replacements(d.current_list(), normalize=False, unlock_off=True)
+        assert list(reps) == [d.elf_path] and rep["unlocked"] and rep["total_songs"] == d.count
+        elf = reps[d.elf_path]
+        assert elfpatch.is_unlocked(elf) and elfpatch.crc(elf) == d.crc and not elfpatch.is_patched(elf)
+        assert elfpatch.read_table(elf) == elfpatch.read_table(d.elf)
+        items = d.current_list()
+        items.pop(3)
+        items.insert(0, items.pop(30))
+        items[7].title = "Edited"
+        reps, rep = d.replacements(items, normalize=False, unlock_off=True)
+        _check_reps(d, items, reps)
+        elf = reps[d.elf_path]
+        assert rep["unlocked"] and elfpatch.is_unlocked(elf) and elfpatch.is_patched(elf)
+        again = elfpatch.set_table(elf, [7] * 50)          # a later song change keeps the unlock
+        assert elfpatch.is_unlocked(again) and elfpatch.crc(again) == d.crc
+        reps, rep = d.replacements(items, normalize=False)
+        assert not rep["unlocked"] and not elfpatch.is_unlocked(reps[d.elf_path])
+
+
+def test_size_plan_and_dvd_capacity():
+    """Projected image size from the planned layout (no encoding) and the single-layer DVD check."""
+    import numpy as np
+    for p in _isos():
+        d = core.Disc(p)
+        src = d.img.volume_sectors * iso.SECTOR
+        same = d.size_plan(d.current_list())
+        assert same["bytes"] == src and same["fits"] and "fits on a single-layer DVD" in same["text"] and "more minutes" in same["text"]
+        pcm = (np.sin(np.arange(32000 * 3) / 7.0) * 8000).astype(np.int16)
+        payload, usable = rws.encode_segment(np.stack([pcm, pcm], 1), d.headers[0].block_size)
+        assert d.encoded_size(3.0) == (len(payload), usable)
+        items = d.current_list() + [core.NewSong("fake%d.flac" % k, "Song %d" % k, "Band", "") for k in range(10)]
+        small = d.size_plan(items, estimate={k: 200.0 for k in range(d.count, len(items))})
+        audio_bytes = 10 * d.encoded_size(200.0)[0]
+        rws1 = d.img.entries[core.RWS_FILES[1]].size     # the grown _EATRAX1.RWS is written after the volume end
+        assert small["fits"] and audio_bytes + rws1 <= small["bytes"] - src <= audio_bytes + rws1 + (8 << 20)
+        big = d.size_plan(items, estimate={k: 3000.0 for k in range(d.count, len(items))})   # 10 x 50 min
+        assert not big["fits"] and big["bytes"] > core.DVD5_SECTORS * iso.SECTOR
+        assert "larger than a single-layer DVD (4.7 GB)" in big["text"] and "%.2f GB" % (big["bytes"] / 1e9) in big["text"]
+        fewer = d.current_list()
+        del fewer[35:]                     # shorter stream file: rewritten in place (only the executable may move)
+        assert d.size_plan(fewer)["bytes"] - src <= d.img.entries[d.elf_path].size + (1 << 20)
+        moved = d.current_list()
+        del moved[5:15]                    # songs move from _EATRAX1 into _EATRAX0: that file grows and is appended
+        assert d.size_plan(moved)["bytes"] > src
+    assert "about 0 more minutes" in core.capacity_text(core.DVD5_SECTORS * iso.SECTOR)
+
+
 def test_set_table_shrink_and_grow():
     vers = _elf_versions()
     if not vers:
         import pytest
         pytest.skip("no executable")
-    for name, d, crc, playlist, table, profile, delta in vers:
-        for n in (1, 20, 40, 41, 60, 100):
+    for name, d, crc, playlist, table, profile, delta, _ in vers:
+        for n in (1, 20, 40, 41, 60, elfpatch.MAX_SONGS):
             flags = [(i % 7) + 1 for i in range(n)]
             out = elfpatch.set_table(d, flags)
             assert elfpatch.crc(out) == crc and elfpatch.read_song_count(out) == n, (name, n)
@@ -320,10 +411,13 @@ def test_manage_end_to_end():
         items[8].audio = flac                          # replace (now #9, was #10)
         items[3].title = "Renamed Once"                # rename (now #4, was #5)
         items.append(core.NewSong(wav, "Added Song", "MusicKit", "Demo"))
-        d.build_list(items, out1)
+        plan = d.size_plan(items, unlock_off=True)
+        rep = d.build_list(items, out1, unlock_off=True)   # song changes + "allow switching any song OFF"
+        assert rep["unlocked"]
+        assert abs(os.path.getsize(out1) - plan["bytes"]) <= 64 << 10, (os.path.getsize(out1), plan["bytes"])
         assert validate.validate(p, out1, log=quiet)
         r = core.Disc(out1)                            # read back the modified image
-        assert r.count == 41 and r.patched and r.crc == d.crc
+        assert r.count == 41 and r.patched and r.crc == d.crc and r.unlocked
         assert [s.title for s in r.songs[:3]] == [names[0], names[2], names[3]]
         assert r.songs[3].title == "Renamed Once" and r.songs[40].title == "Added Song"
         assert [s.original for s in r.songs] == [True] * 8 + [False] + [True] * 31 + [False]
@@ -335,7 +429,7 @@ def test_manage_end_to_end():
         r.build_list(items2, out2)
         assert validate.validate(out1, out2, log=quiet)
         r2 = core.Disc(out2)
-        assert r2.count == 42 and r2.crc == d.crc
+        assert r2.count == 42 and r2.crc == d.crc and r2.unlocked     # the unlock stays on later edits
         assert [s.title for s in r2.songs[:2]] == ["Added Song", names[0]]
         assert r2.songs[4].title == "Renamed Twice" and r2.songs[41].title == "Added Later"
         assert sum(not s.original for s in r2.songs) == 3

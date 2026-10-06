@@ -227,6 +227,35 @@ class IsoImage:
                 self.entries[path].udf_fe = self.part_start + icb
 
     # ---- writing
+    def plan(self, sizes):
+        """Placement of replaced files {iso path: size in bytes} -> ({path: lsn}, new volume sectors, has end
+        anchor). A file that still fits stays in place, the others go after the end of the volume."""
+        sizes = {(k.upper() if k.startswith("/") else "/" + k.upper()): v for k, v in sizes.items()}
+        has_end_anchor = False
+        if self.udf:
+            last = self.read(self.volume_sectors - 1)
+            has_end_anchor = struct.unpack_from("<H", last, 0)[0] == 2
+        # new data starts where the end anchor was (or at the end). Replaced files that already sit after every
+        # untouched file (appended by an earlier MusicKit build) are rewritten from there, so the image does not
+        # grow on every rebuild.
+        next_lsn = self.volume_sectors - 1 if has_end_anchor else self.volume_sectors
+        fixed_end = max(e.lsn + e.sectors for k, e in self.entries.items() if k not in sizes)
+        tail = [self.entries[k].lsn for k in sizes if self.entries[k].lsn >= fixed_end]
+        relocate_tail = bool(tail)
+        if relocate_tail:
+            next_lsn = min(next_lsn, max(fixed_end, min(tail)))
+        lsns = {}
+        for key in sorted(sizes, key=lambda k: self.entries[k].lsn):
+            e = self.entries[key]
+            n = (sizes[key] + SECTOR - 1) // SECTOR
+            if n <= e.sectors and not (relocate_tail and e.lsn >= fixed_end):
+                lsns[key] = e.lsn
+            else:
+                lsns[key] = next_lsn
+                next_lsn += n
+        new_volume = max(next_lsn + (1 if has_end_anchor else 0), self.volume_sectors)
+        return lsns, new_volume, has_end_anchor
+
     def build(self, out_path, replacements, progress=None):
         """Write a new image: replacements = {iso path: bytes or Parts}. Returns {path: (lsn, size)} of written files."""
         if os.path.abspath(out_path) == os.path.abspath(self.path):
@@ -249,30 +278,14 @@ class IsoImage:
                 done += len(chunk)
                 if progress:
                     progress(0.9 * done / total, "copying image")
-        has_end_anchor = False
-        if self.udf:
-            last = self.read(self.volume_sectors - 1)
-            has_end_anchor = struct.unpack_from("<H", last, 0)[0] == 2
-        # new data starts where the end anchor was (or at the end). Replaced files that already sit after every
-        # untouched file (appended by an earlier MusicKit build) are rewritten from there, so the image does not
-        # grow on every rebuild.
-        next_lsn = self.volume_sectors - 1 if has_end_anchor else self.volume_sectors
-        fixed_end = max(e.lsn + e.sectors for k, e in self.entries.items() if k not in reps)
-        tail = [self.entries[k].lsn for k in reps if self.entries[k].lsn >= fixed_end]
-        relocate_tail = bool(tail)
-        if relocate_tail:
-            next_lsn = min(next_lsn, max(fixed_end, min(tail)))
+        lsns, new_volume, has_end_anchor = self.plan({k: len(v) for k, v in reps.items()})
         placed = {}
         with open(out_path, "r+b") as out:
             for key in sorted(reps, key=lambda k: self.entries[k].lsn):
                 e = self.entries[key]
                 data = reps[key]
                 n = (len(data) + SECTOR - 1) // SECTOR
-                if n <= e.sectors and not (relocate_tail and e.lsn >= fixed_end):
-                    lsn = e.lsn
-                else:
-                    lsn = next_lsn
-                    next_lsn += n
+                lsn = lsns[key]
                 out.seek(lsn * SECTOR)
                 if isinstance(data, Parts):
                     data.write_to(out)
@@ -288,7 +301,6 @@ class IsoImage:
                     self._patch_fe(fe, lsn - self.part_start, len(data))
                     out.seek(e.udf_fe * SECTOR)
                     out.write(udf_fix_tag(fe))
-            new_volume = max(next_lsn + (1 if has_end_anchor else 0), self.volume_sectors)
             # PVD volume space size
             pvd = bytearray(self.pvd)
             pvd[80:88] = _both32(new_volume)
