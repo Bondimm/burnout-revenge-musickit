@@ -109,7 +109,8 @@ your image, tick the option and save, no new songs needed. The PCSX2 game CRC st
 
 ## Thanks
 
-- [porkuskorpz](https://github.com/porkuskorpz) (u/porkuskorpz) for in-game testing and the detailed report that
+- porkuskorpz ([GitHub](https://github.com/porkuskorpz), [Reddit u/porkuskorpz](https://www.reddit.com/user/porkuskorpz/))
+  for in-game testing and the detailed report that
   led to the *Allow switching any song OFF* option.
 
 ## Legal
