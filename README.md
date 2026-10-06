@@ -184,6 +184,13 @@ after it has played to the end once. Songs added with MusicKit are never locked.
 use [Allow switching any song OFF](#allow-switching-any-song-off) (command line: `build --unlock-off`). The PCSX2
 game CRC stays the same.
 
+## Other Burnout MusicKits
+
+- [Burnout 3: Takedown MusicKit](https://github.com/Bondimm/burnout3-takedown-musickit) — the same tool for
+  Burnout 3: Takedown (PS2).
+- [Burnout Dominator MusicKit](https://github.com/Bondimm/burnout-dominator-musickit) — the same tool for Burnout
+  Dominator (PS2).
+
 ## Thanks
 
 - porkuskorpz ([GitHub](https://github.com/porkuskorpz), [Reddit u/porkuskorpz](https://www.reddit.com/user/porkuskorpz/))
