@@ -1,7 +1,8 @@
 """Audio import: probe + decode any format via ffmpeg, convert to the game's format, loudness matching.
 
 Target format of EA Trax streams: PS-ADPCM, stereo, 32000 Hz (decoded quality ~ 16-bit, 32 kHz band limit
-16 kHz). Inputs are resampled with soxr (high precision); mono is duplicated to both channels. Loudness is
+16 kHz). Inputs are resampled with soxr (high precision) or, if the ffmpeg build lacks it, ffmpeg's own resampler with
+a long filter; mono is duplicated to both channels. Loudness is
 matched to the median integrated loudness (EBU R128 / LUFS) of the original songs with ffmpeg's two-pass
 loudnorm in linear mode (pure gain) plus a -1 dBTP ceiling.
 """
@@ -97,9 +98,28 @@ class AudioInfo:
         return notes
 
 
+_RESAMPLER = None
+
+
+def resampler():
+    """ffmpeg resampler options: soxr (high precision) when this ffmpeg build has it, otherwise ffmpeg's own
+    resampler with a long filter (the "essentials" builds that setup.bat downloads come without soxr)."""
+    global _RESAMPLER
+    if _RESAMPLER is None:
+        try:
+            p = subprocess.run([ffmpeg_exe(), "-hide_banner", "-buildconf"], capture_output=True,
+                               creationflags=_CREATE_NO_WINDOW)
+            has_soxr = b"enable-libsoxr" in p.stdout + p.stderr
+        except OSError:
+            has_soxr = False
+        _RESAMPLER = ("resampler=soxr:precision=28" if has_soxr else
+                      "resampler=swr:filter_size=256:phase_shift=10:cutoff=0.97:linear_interp=1")
+    return _RESAMPLER
+
+
 def decode(path, rate=TARGET_RATE, filters=None):
-    """Decode to float32 (n, 2) at `rate` using soxr."""
-    af = "aresample=%d:resampler=soxr:precision=28" % rate
+    """Decode to float32 (n, 2) at `rate` (soxr if available, else ffmpeg's high-quality resampler)."""
+    af = "aresample=%d:%s" % (rate, resampler())
     if filters:
         af = filters + "," + af
     p = _run([ffmpeg_exe(), "-v", "error", "-i", path, "-vn", "-af", af, "-ac", "2", "-f", "f32le", "-"])
