@@ -177,7 +177,7 @@ class Layout:
             if i % 4 == 0 and i >= 0x4C:
                 base = i - 0x4C
                 z, n = struct.unpack_from("<II", d, base)
-                if z == 0 and ORIGINAL_SONGS <= n <= MAX_SONGS:
+                if z == 0 and 1 <= n <= MAX_SONGS:
                     hits.append(s[2] + base)
             i = d.find(key, i + 1)
         if len(hits) != 1:
@@ -201,6 +201,43 @@ def is_patched(data):
 def read_song_count(data):
     lay = Layout(data)
     return lay.elf.r32(lay.playlist + 4)
+
+
+def read_table(data):
+    """Song table entries [(song id, 0, flags)] for the current song count (original or relocated table)."""
+    lay = Layout(data)
+    e = lay.elf
+    n = e.r32(lay.playlist + 4)
+    ptr = e.r32(lay.playlist + 0x4C)
+    return [struct.unpack_from("<3I", e.d, e.file_offset(ptr + 12 * i)) for i in range(n)]
+
+
+def set_table(data, flags):
+    """Return a copy whose song table is entry i = (i, 0, flags[i]) for every song (1..MAX_SONGS songs, same
+    PCSX2 CRC). An original executable is patched first. Songs are identified by their position only: the
+    profile flag bytes 0..40 (memory card) apply to table entries 0..40, later entries keep the flags written here.
+    """
+    total = len(flags)
+    if not 1 <= total <= MAX_SONGS:
+        raise ValueError("between 1 and %d songs are supported (got %d)" % (MAX_SONGS, total))
+    target_crc = crc(data)
+    if not is_patched(data):
+        data = patch(data, ORIGINAL_SONGS)
+    lay = Layout(data)
+    e = lay.elf
+    old = e.r32(lay.playlist + 4)
+    for i in range(max(total, old, ORIGINAL_SONGS)):
+        if i < total:
+            entry = (i, 0, flags[i])
+        elif i < ORIGINAL_SONGS:      # the profile loader still writes flags into entries 0..40
+            entry = (i, 0, 7)
+        else:
+            entry = (0, 0, 0)
+        o = e.file_offset(lay.table_new + 12 * i)
+        e.d[o:o + 12] = struct.pack("<3I", *entry)
+    e.w32(lay.playlist + 4, total)
+    appended = len(e.d) > e.content_end()
+    return _fix_crc(e.d, target_crc, appended)
 
 
 def _fix_crc(data, target, appended):

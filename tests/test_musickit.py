@@ -162,6 +162,189 @@ def test_build_iso_end_to_end():
     os.remove(out)
 
 
+# ---------------------------------------------------------------- song management (replace/edit/remove/move)
+def _isos():
+    out = [p for p in (ISO, USA_ISO) if p and os.path.exists(p)]
+    if not out:
+        import pytest
+        pytest.skip("set MUSICKIT_ISO and/or MUSICKIT_USA_ISO")
+    return out
+
+
+def _ffmpeg():
+    from musickit import audio
+    try:
+        audio.AudioInfo(os.path.join(HERE, "data", "test_chords_22k_mono.wav"))
+    except Exception:
+        import pytest
+        pytest.skip("ffmpeg not found")
+
+
+def _check_reps(d, items, reps):
+    """Song list consistency of the files build_list writes for `items`: executable table + count + CRC, the
+    strings of every language and the stream segment of every position."""
+    total = len(items)
+    elf = reps[d.elf_path]
+    assert elfpatch.crc(elf) == d.crc and elfpatch.read_song_count(elf) == total
+    table = elfpatch.read_table(elf)
+    for k, it in enumerate(items):
+        assert table[k][:2] == (k, 0)
+        assert table[k][2] == (7 if isinstance(it, core.NewSong) else d.songs[it.src].flags)
+    for l in d.langs:
+        t = strtable.StringTable(reps["/LANGUAGE/STRINGS/MAIN%s.BIN" % l])
+        for k, it in enumerate(items):
+            for f, sid in (("title", "EATraxSongTitle%d"), ("artist", "EATraxArtist%d"), ("album", "EATraxAlbum%d")):
+                want = it.text(l, f) if isinstance(it, core.NewSong) else it.text(d, l, f)
+                assert t.get(sid % (k + 1)) == (want or (" " if f != "title" else "Untitled")), (l, k, f)
+    for ri, path in enumerate(core.RWS_FILES):
+        lo, hi = (0, min(core.SPLIT, total)) if ri == 0 else (core.SPLIT, total)
+        if path not in reps:          # unchanged file: same songs at the same place, or not used at all
+            assert hi <= lo or all(isinstance(items[k], core.SongRef) and items[k].src == k and not items[k].audio
+                                   for k in range(lo, hi))
+            continue
+        parts = reps[path].parts
+        h = rws.RwsHeader(parts[0])
+        assert len(h.segments) == hi - lo and len(parts) == 1 + hi - lo
+        for j, seg in enumerate(h.segments):
+            it = items[lo + j]
+            assert seg.name == "%02d" % (lo + j)
+            assert seg.offset == sum(s.size for s in h.segments[:j])
+            if isinstance(it, core.SongRef) and not it.audio:
+                s = d.songs[it.src]
+                src_seg = d.headers[s.rws_index].segments[s.segment]
+                e = d.img.entries[core.RWS_FILES[s.rws_index]]
+                assert parts[1 + j] == (d.path, e.lsn * iso.SECTOR + d.headers[s.rws_index].segment_file_offset(src_seg),
+                                        src_seg.size)
+                assert seg.usable == src_seg.usable and seg.uuid[8:] == src_seg.uuid[8:]
+            else:
+                assert seg.uuid.startswith(core.MARK) and len(parts[1 + j]) == seg.size
+
+
+def test_remove_move_edit_consistency():
+    for p in _isos():
+        d = core.Disc(p)
+        items = d.current_list()
+        assert d.is_unchanged(items) and d.save_warning(items) is None
+        items.pop(2)                                   # remove an original song in _EATRAX0
+        items.insert(0, items.pop(-1))                 # move the last song (in _EATRAX1) to the top
+        items[24], items[25] = items[25], items[24]    # swap two songs in _EATRAX1
+        items[5].title = "Edited Title"                # rename for every language
+        items[5].names = {d.langs[-1]: {"artist": "Edited Artist"}}
+        reps, rep = d.replacements(items, normalize=False)
+        _check_reps(d, items, reps)
+        assert rep["total_songs"] == 40 and rep["removed"] == 1
+        assert d.save_shift(items)[:3] == [1, 2, 3] and d.save_warning(items)
+        t = strtable.StringTable(reps["/LANGUAGE/STRINGS/MAIN%s.BIN" % d.langs[-1]])
+        assert t.get("EATraxSongTitle6") == "Edited Title" and t.get("EATraxArtist6") == "Edited Artist"
+        assert t.get("EATraxSongTitle41") == d.songs[40].names[d.langs[-1]]["title"]   # original ids stay
+
+
+def test_edit_only_keeps_streams_and_saves():
+    for p in _isos():
+        d = core.Disc(p)
+        items = d.current_list()
+        items[0].names = {l: {"title": "Neu %s" % l} for l in d.langs}
+        reps, rep = d.replacements(items, normalize=False)
+        _check_reps(d, items, reps)
+        assert not any(k in reps for k in core.RWS_FILES)   # streams untouched
+        assert d.save_shift(items) == [] and d.save_warning(items) is None
+
+
+def test_minimum_one_song_and_limits():
+    import pytest
+    for p in _isos():
+        d = core.Disc(p)
+        items = [core.SongRef(30)]
+        reps, rep = d.replacements(items, normalize=False)
+        _check_reps(d, items, reps)
+        assert core.RWS_FILES[1] not in reps and len(d.save_shift(items)) == 41
+        with pytest.raises(ValueError):
+            d.replacements([], normalize=False)
+        with pytest.raises(ValueError):
+            d.replacements([core.SongRef(0)] * (core.MAX_SONGS + 1), normalize=False)
+
+
+def test_replace_audio_keeps_slot():
+    _ffmpeg()
+    for p in _isos():
+        d = core.Disc(p)
+        items = d.current_list()
+        items[4].audio = os.path.join(HERE, "data", "test_chords_22k_mono.wav")      # in _EATRAX0
+        items[30].audio = os.path.join(HERE, "data", "test_chords_44k_24bit.flac")   # in _EATRAX1
+        items.append(core.NewSong(os.path.join(HERE, "data", "test_chords_22k_mono.wav"), "New", "MusicKit", ""))
+        reps, rep = d.replacements(items, normalize=False)
+        _check_reps(d, items, reps)
+        assert d.save_shift(items) == []
+        assert [s["index"] for s in rep["songs"]] == [4, 30, 41] and rep["songs"][0]["replaced"]
+        h = rws.RwsHeader(reps[core.RWS_FILES[0]].parts[0])
+        pcm = rws.decode_segment(reps[core.RWS_FILES[0]].parts[5], h.segments[4].usable)
+        assert abs(len(pcm) / 32000.0 - 20.0) < 0.1
+
+
+def test_set_table_shrink_and_grow():
+    vers = _elf_versions()
+    if not vers:
+        import pytest
+        pytest.skip("no executable")
+    for name, d, crc, playlist, table, profile, delta in vers:
+        for n in (1, 20, 40, 41, 60, 100):
+            flags = [(i % 7) + 1 for i in range(n)]
+            out = elfpatch.set_table(d, flags)
+            assert elfpatch.crc(out) == crc and elfpatch.read_song_count(out) == n, (name, n)
+            assert [t[2] for t in elfpatch.read_table(out)] == flags
+            again = elfpatch.set_table(out, flags[:max(1, n // 2)] + [7])     # re-patch a patched executable
+            assert elfpatch.crc(again) == crc and len(again) == len(out)
+            e = elfpatch.Elf(again)
+            for i in range(41):    # entries 0..40 stay valid for the memory card profile loader
+                assert struct.unpack("<3I", again[e.file_offset(table + 12 * i):][:12])[:2] == (i, 0)
+
+
+def test_manage_end_to_end():
+    """Remove an original, replace one, rename one, add one, reopen the output and rename again (writes 2 images
+    of ~4 GB per ISO, one at a time) - only with MUSICKIT_FULL_TEST=1."""
+    if not os.environ.get("MUSICKIT_FULL_TEST"):
+        import pytest
+        pytest.skip("set MUSICKIT_FULL_TEST=1")
+    _ffmpeg()
+    from musickit import validate
+    flac = os.path.join(HERE, "data", "test_chords_44k_24bit.flac")
+    wav = os.path.join(HERE, "data", "test_chords_22k_mono.wav")
+    quiet = lambda *a: None   # noqa: E731
+    for p in _isos():
+        tmp = tempfile.mkdtemp()
+        out1, out2 = os.path.join(tmp, "step1.iso"), os.path.join(tmp, "step2.iso")
+        d = core.Disc(p)
+        names = [s.title for s in d.songs]
+        items = d.current_list()
+        items.pop(1)                                   # remove original #2
+        items[8].audio = flac                          # replace (now #9, was #10)
+        items[3].title = "Renamed Once"                # rename (now #4, was #5)
+        items.append(core.NewSong(wav, "Added Song", "MusicKit", "Demo"))
+        d.build_list(items, out1)
+        assert validate.validate(p, out1, log=quiet)
+        r = core.Disc(out1)                            # read back the modified image
+        assert r.count == 41 and r.patched and r.crc == d.crc
+        assert [s.title for s in r.songs[:3]] == [names[0], names[2], names[3]]
+        assert r.songs[3].title == "Renamed Once" and r.songs[40].title == "Added Song"
+        assert [s.original for s in r.songs] == [True] * 8 + [False] + [True] * 31 + [False]
+        assert abs(r.songs[8].duration - 30.0) < 0.1
+        items2 = r.current_list()                      # edit again + move + add on the modified image
+        items2[3].title = "Renamed Twice"
+        items2.insert(0, items2.pop(40))
+        items2.append(core.NewSong(flac, "Added Later", "MusicKit", ""))
+        r.build_list(items2, out2)
+        assert validate.validate(out1, out2, log=quiet)
+        r2 = core.Disc(out2)
+        assert r2.count == 42 and r2.crc == d.crc
+        assert [s.title for s in r2.songs[:2]] == ["Added Song", names[0]]
+        assert r2.songs[4].title == "Renamed Twice" and r2.songs[41].title == "Added Later"
+        assert sum(not s.original for s in r2.songs) == 3
+        r.img.f.close()
+        r2.img.f.close()
+        os.remove(out1)
+        os.remove(out2)
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))

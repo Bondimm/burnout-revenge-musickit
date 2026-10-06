@@ -113,13 +113,67 @@ def validate(src_path, out_path, log=print, hash_all=True):
         if clash:
             ok = False
     log("note: the modified disc can never match the redump MD5 (expected for any modified image)")
-    for s in d.songs[s0.count:]:
-        pcm = d.decode_song(s.index)
-        log("  #%d %s / %s / %s  %.1f s  peak %d" % (s.index + 1, s.artist, s.title, s.album, len(pcm) / 32000.0,
-                                                    int(abs(pcm.astype(int)).max())))
-    for s, o in zip(d.songs, s0.songs):
-        if (s.title, s.artist, s.album, s.usable) != (o.title, o.artist, o.album, o.usable):
-            log("FAIL: original song %d changed" % (s.index + 1))
-            ok = False
+    ok = check_songs(s0, d, log) and ok
     log("RESULT: %s" % ("OK" if ok else "FAILED"))
     return ok
+
+
+def check_songs(s0, d, log=print):
+    """Song list consistency of output disc `d` (built from `s0`): table, names, streams. Songs whose audio was
+    kept (same segment UUID) must be byte-identical to the source; new / replaced songs must decode."""
+    ok = True
+    table = elfpatch.read_table(d.elf)
+    if [t[:2] for t in table] != [(i, 0) for i in range(d.count)]:
+        log("FAIL: song table entries do not match their positions")
+        ok = False
+    if not 1 <= d.count <= core.MAX_SONGS:
+        log("FAIL: song count %d" % d.count)
+        ok = False
+    nseg = [len(h.segments) for h in d.headers]
+    if nseg[0] < min(d.count, core.SPLIT) or (d.count > core.SPLIT and nseg[1] < d.count - core.SPLIT):
+        log("FAIL: stream files have %s segments for %d songs" % (nseg, d.count))
+        ok = False
+    src_by_uuid = {}
+    for s in s0.songs:
+        src_by_uuid[s0.headers[s.rws_index].segments[s.segment].uuid] = s
+    for s in d.songs:
+        for l in d.langs:
+            if not d.tables[l].get("EATraxSongTitle%d" % (s.index + 1)):
+                log("FAIL: song %d has no title in %s" % (s.index + 1, l))
+                ok = False
+        seg = d.headers[s.rws_index].segments[s.segment] if s.segment < nseg[s.rws_index] else None
+        if seg is None:
+            continue
+        o = src_by_uuid.get(seg.uuid)
+        if o is not None and o.usable == s.usable and _seg_hash(s0, o) == _seg_hash(d, s):
+            continue
+        if o is not None and not seg.uuid.startswith(core.MARK):
+            log("FAIL: song %d audio differs from the source song %d" % (s.index + 1, o.index + 1))
+            ok = False
+            continue
+        pcm = d.decode_song(s.index)
+        log("  #%d %s / %s / %s  %.1f s  peak %d  (new audio)" % (s.index + 1, s.artist, s.title, s.album,
+                                                                 len(pcm) / 32000.0, int(abs(pcm.astype(int)).max())))
+        if len(pcm) < 32000:
+            log("FAIL: song %d is shorter than 1 s" % (s.index + 1))
+            ok = False
+    kept = sum(1 for s in d.songs if s.original)
+    log("songs: %d total, %d original, %d added or replaced" % (d.count, kept, d.count - kept))
+    return ok
+
+
+def _seg_hash(disc, s):
+    hdr = disc.headers[s.rws_index]
+    seg = hdr.segments[s.segment]
+    f, e = disc.img.open_file(core.RWS_FILES[s.rws_index])
+    with f:
+        f.seek(e.lsn * iso.SECTOR + hdr.segment_file_offset(seg))
+        h = hashlib.sha1()
+        left = seg.size
+        while left:
+            b = f.read(min(left, 8 << 20))
+            if not b:
+                break
+            h.update(b)
+            left -= len(b)
+    return h.hexdigest()

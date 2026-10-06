@@ -2,7 +2,8 @@
 
 **Add your own songs to the EA Trax soundtrack of Burnout Revenge** — with their title, artist and album — and
 get a new disc image that plays them in the game just like the original songs: in menus and races, in the Song
-Manager, and in the "EA TRAX" now-playing pop-up.
+Manager, and in the "EA TRAX" now-playing pop-up. You can also **replace, rename, remove and reorder** any song,
+the original ones included.
 
 > **Unofficial fan-made tool.** Not affiliated with, endorsed or sponsored by Electronic Arts Inc. or Criterion
 > Games. You need **your own copy** of the game. See [Legal](#legal) before you use or share anything.
@@ -11,10 +12,11 @@ Manager, and in the "EA TRAX" now-playing pop-up.
   - Europe / PAL — `SLES-53507`
   - USA / NTSC — `SLUS-21242`
 - Your original image is **only read, never modified**; MusicKit writes a **new** `.iso`.
-- Songs: MP3, FLAC, WAV, OGG, M4A … (anything ffmpeg can read), up to 100 songs in total.
+- Songs: MP3, FLAC, WAV, OGG, M4A … (anything ffmpeg can read), from 1 up to 100 songs in total.
+- Open an image MusicKit already made to keep editing it: its current song list is read back from the disc.
 - The new image keeps the game's PCSX2 CRC (`7E83CC5B` PAL, `D224D348` USA), so **PCSX2 still recognises the game
   and applies its patches** (widescreen etc.).
-- Tested in PCSX2 with both the PAL and the USA version.
+- Adding songs was tested in PCSX2 with both the PAL and the USA version.
 
 ---
 
@@ -25,6 +27,22 @@ Manager, and in the "EA TRAX" now-playing pop-up.
 
 ### Step 2 — Add songs
 ![Step 2 - add songs](docs/images/step2_add_song.png)
+
+<!-- TODO: new screenshot of the song list with Replace / Edit / X / arrow buttons -->
+### Change any song (optional)
+The **song list** on the right shows the soundtrack as it will be on the new disc. Every song — original or
+added — has these buttons:
+
+| Button | What it does |
+|---|---|
+| **Play** | listen to the song (new audio: exactly as the game will play it) |
+| **▲ / ▼** | move the song up or down in the list |
+| **Replace** | use another audio file for this song; it keeps its place and its names (edit them too if you like) |
+| **Edit** | change title, artist and album — for all languages at once or per language (English, French, German …) |
+| **X** | remove the song from the disc (at least one song must stay) |
+
+Nothing is written until you save: changes are collected and applied in step 3. *Undo all changes* returns to the
+list of the selected ISO.
 
 ### Step 3 — Save a new ISO
 ![Step 3 - save the new ISO](docs/images/step3_save_iso.png)
@@ -85,6 +103,19 @@ musickit-cli.bat build    --iso "Burnout Revenge (Europe).iso" --out "Burnout Re
 musickit-cli.bat validate "Burnout Revenge (Europe).iso" "Burnout Revenge (MusicKit).iso"
 ```
 
+Change existing songs (numbers are positions in the pending list shown by `queue`):
+
+```bat
+musickit-cli.bat replace     5 other.flac --iso "Burnout Revenge (Europe).iso"
+musickit-cli.bat edit        7 --title "New Title" --artist "New Artist" --album-ge "Neues Album"
+musickit-cli.bat remove-song 12
+musickit-cli.bat move        41 1          (or: move 41 up / move 41 down)
+musickit-cli.bat queue                     (show the pending list)
+musickit-cli.bat reset                     (forget all pending changes)
+```
+
+`remove` (without `-song`) still removes a queued *new* song; `remove-song` removes a song from the disc.
+
 `validate` re-reads the new image and checks it: the file system is consistent, every file MusicKit did not change
 is byte-identical, the PCSX2 CRC is unchanged and the new songs decode.
 
@@ -94,10 +125,15 @@ is byte-identical, the PCSX2 CRC is unchanged and the new songs decode.
 image — it simply is not the original pressing anymore. It does not affect the game or PCSX2 patches: the game CRC
 (shown in PCSX2's game properties) stays the same.
 
-**Can I add more songs later?** Yes. Open the image MusicKit made and add more; the songs already in it are kept.
+**Can I add more songs later?** Yes. Open the image MusicKit made and add, replace, rename, remove or reorder
+songs; MusicKit reads the current song list back from that image.
 
-**Will my save game still work?** Yes. Your original songs' settings stay where they are on the memory card; new
-songs default to *ALL* (menus and races) and can be changed in the Song Manager.
+**Will my save game still work?** Yes. The game keeps the Song Manager setting of the first 41 songs (on/off,
+menus/races) on the memory card **by position in the list**, not by song. Adding songs, replacing audio and
+renaming keep every setting where it is; new songs default to *ALL* (menus and races). **Removing or moving
+songs** shifts those saved settings: a song that ends up at another position uses the setting saved for that
+position. MusicKit warns you before it saves such a list — afterwards check the Song Manager once and set the songs
+the way you want.
 
 **My songs don't show up.** Make sure you started the *new* `.iso`, and look at the end of the Song Manager list.
 

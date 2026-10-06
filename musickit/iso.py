@@ -36,6 +36,38 @@ def _both32(v):
     return struct.pack("<I", v) + struct.pack(">I", v)
 
 
+class Parts:
+    """File content assembled from bytes and (path, offset, size) ranges of other files, written without loading
+    it into memory (used for large .RWS files)."""
+
+    def __init__(self, parts):
+        self.parts = list(parts)
+
+    def __len__(self):
+        return sum(len(p) if isinstance(p, (bytes, bytearray)) else p[2] for p in self.parts)
+
+    def write_to(self, out):
+        for p in self.parts:
+            if isinstance(p, (bytes, bytearray)):
+                out.write(p)
+                continue
+            path, off, size = p
+            with open(path, "rb") as f:
+                f.seek(off)
+                while size:
+                    b = f.read(min(size, 8 << 20))
+                    if not b:
+                        raise IOError("unexpected end of " + path)
+                    out.write(b)
+                    size -= len(b)
+
+    def read(self):
+        import io
+        b = io.BytesIO()
+        self.write_to(b)
+        return b.getvalue()
+
+
 class Entry:
     def __init__(self, path, lsn, size, rec_lsn, rec_off):
         self.path = path
@@ -196,7 +228,7 @@ class IsoImage:
 
     # ---- writing
     def build(self, out_path, replacements, progress=None):
-        """Write a new image: replacements = {iso path: bytes}. Returns {path: (lsn, size)} of written files."""
+        """Write a new image: replacements = {iso path: bytes or Parts}. Returns {path: (lsn, size)} of written files."""
         if os.path.abspath(out_path) == os.path.abspath(self.path):
             raise ValueError("refusing to overwrite the source image")
         reps = {}
@@ -242,7 +274,11 @@ class IsoImage:
                     lsn = next_lsn
                     next_lsn += n
                 out.seek(lsn * SECTOR)
-                out.write(data + b"\0" * (n * SECTOR - len(data)))
+                if isinstance(data, Parts):
+                    data.write_to(out)
+                else:
+                    out.write(data)
+                out.write(b"\0" * (n * SECTOR - len(data)))
                 placed[key] = (lsn, len(data))
                 # ISO9660 directory record: extent (both endian) at +2, size at +10
                 out.seek(e.rec_lsn * SECTOR + e.rec_off + 2)

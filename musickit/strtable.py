@@ -51,6 +51,9 @@ class StringTable:
     def set(self, name, text):
         self.entries[string_hash(name)] = text
 
+    def delete(self, name):
+        self.entries.pop(string_hash(name), None)
+
     def build(self):
         keys = sorted(self.entries, key=_signed)
         n = len(keys)
