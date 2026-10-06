@@ -43,7 +43,7 @@ In the game open **Driver Details → EA Trax → Song Manager**.
 |---|---|
 | Operating system | Windows 10 or 11 (64-bit) |
 | Python | 3.11 or newer — <https://www.python.org/downloads/> |
-| Python packages | installed automatically by `setup.bat` into a private `.venv`: numpy, numba, glfw, PyOpenGL, imgui-bundle, Pillow, pycdlib (see [requirements.txt](requirements.txt)) |
+| Python packages | installed automatically by `setup.bat` into a private `.venv`: numpy, numba, glfw, PyOpenGL, imgui-bundle, Pillow, soundfile, pyloudnorm, pycdlib (see [requirements.txt](requirements.txt)) |
 | ffmpeg | downloaded automatically by `setup.bat` (or install it yourself: `winget install Gyan.FFmpeg`) |
 | Graphics | any GPU with OpenGL 3.3 (for the MusicKit window) |
 | Disk space | about 5 GB free for the new disc image (~4.2 GB) plus ~1 GB for Python packages and ffmpeg |
