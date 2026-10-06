@@ -1,7 +1,7 @@
 """MusicKit desktop GUI: 1) select the Burnout Revenge ISO, 2) add songs, 3) save a new ISO. The song list on the
 right replaces, renames, removes and reorders any song (changes are applied when the new ISO is saved).
 
-Launch: MusicKit.bat in the project root (or tools\\musickit\\MusicKitGUI.bat, `musickit gui`).
+Launch: MusicKit.bat in the project root (or `musickit gui`).
 Same GLFW + OpenGL 3.3 + Dear ImGui stack as carkit. Long operations run on a worker thread; messages go to the
 log panel and %APPDATA%\\musickit\\gui.log. The source ISO is only read; the result is always a new file.
 """
@@ -51,7 +51,23 @@ def _bw(*labels):
 
 def _tip(text):
     if imgui.is_item_hovered(imgui.HoveredFlags_.allow_when_disabled | imgui.HoveredFlags_.delay_short):
-        imgui.set_tooltip(text)
+        imgui.begin_tooltip()
+        imgui.push_text_wrap_pos(imgui.get_font_size() * 40)
+        imgui.text_unformatted(text)
+        imgui.pop_text_wrap_pos()
+        imgui.end_tooltip()
+
+
+def _text(color, text):
+    """Message text wrapped to the width of the current panel / table column (re-flows when the window is resized)."""
+    imgui.push_text_wrap_pos(0)
+    if color is None:
+        imgui.text_unformatted(text)
+    else:
+        imgui.push_style_color(imgui.Col_.text, _col(color))
+        imgui.text_unformatted(text)
+        imgui.pop_style_color()
+    imgui.pop_text_wrap_pos()
 
 
 class Log:
@@ -145,6 +161,7 @@ class MusicKitGui:
         self.ref_loudness = None
         self.last_report = None
         self.playing = None
+        self.saved_out = None  # last image saved in this session
         self.load_disc(self.iso_path)
         if settings.get("form"):
             self.set_form_file(settings["form"]["path"])
@@ -160,7 +177,8 @@ class MusicKitGui:
                               "list": [_item(it).to_json() for it in self.items] if self.disc else None,
                               "list_iso": self.disc.path if self.disc else None})
         try:
-            json.dump(self.settings, open(os.path.join(app_dir(), "settings.json"), "w", encoding="utf-8"), indent=1)
+            with open(os.path.join(app_dir(), "settings.json"), "w", encoding="utf-8") as f:
+                json.dump(self.settings, f, indent=1)
         except OSError:
             pass
 
@@ -183,6 +201,20 @@ class MusicKitGui:
     def can_save(self):
         """Song list changed, or the switch-off unlock alone."""
         return self.changed() or self.unlock_pending()
+
+    def save_problem(self):
+        """Why "Save new ISO" cannot be pressed now (None when it can)."""
+        if self.disc is None:
+            return "select the ISO first"
+        if self.busy():
+            return "wait until '%s' has finished" % self.job.title
+        if not self.can_save():
+            return "nothing to save yet: add, replace, rename, remove or move songs first"
+        if not self.out_path.strip():
+            return "choose where to save the new ISO"
+        if os.path.abspath(self.out_path) == os.path.abspath(self.iso_path):
+            return "choose a different output file - the source ISO is never overwritten"
+        return None
 
     def size_plan(self):
         """Projected size of the new image (cached per song list; None if it cannot be computed)."""
@@ -220,6 +252,9 @@ class MusicKitGui:
         self.job = Job(title, fn, self.log)
 
     def load_disc(self, path):
+        if self.busy():
+            self.log.error("'%s' is still running - open the ISO again when it has finished" % self.job.title)
+            return
         self.iso_path = path
         self.disc = None
         self.disc_error = None
@@ -252,7 +287,7 @@ class MusicKitGui:
             if items:
                 self.items = items
             else:
-                self.reset_list()
+                self.reset_list(keep_new=os.path.abspath(path) != self.saved_out)
             if not self.out_path or os.path.abspath(self.out_path) == os.path.abspath(path):
                 self.out_path = core.default_output(path)
             self.log("disc: %s - %d songs (%s)" % (os.path.basename(path), d.count,
@@ -321,6 +356,20 @@ class MusicKitGui:
         if isinstance(it, Pending):
             return it.song.text(lang, field) if lang else getattr(it.song, field)
         return it.text(self.disc, lang or self.disc.langs[0], field)
+
+    def rename(self, it, key, value, lang=None):
+        """Song editor: a text for all languages (lang None) replaces the per-language texts of that field."""
+        target = it.song if isinstance(it, Pending) else it
+        if lang is None:
+            setattr(target, key, value)
+            for d in target.names.values():
+                d.pop(key, None)
+        else:
+            target.names.setdefault(lang, {})[key] = value
+
+    def restore_names(self, it):
+        it.title = it.artist = it.album = None
+        it.names = {}
 
     def move_item(self, i, to):
         if 0 <= to < len(self.items):
@@ -421,10 +470,9 @@ class MusicKitGui:
 
     # ------------------------------------------------------------------ build
     def build(self):
-        if not self.can_save():
-            return
-        if os.path.abspath(self.out_path) == os.path.abspath(self.iso_path):
-            self.log.error("choose a different output file - the source ISO is never overwritten")
+        problem = self.save_problem()
+        if problem:
+            self.log.error(problem)
             return
         items = self.core_items()
         out = self.out_path
@@ -447,6 +495,7 @@ class MusicKitGui:
                     "%.1f" % s["output_lufs"] if s["output_lufs"] is not None else "-"))
             self.log("saved %s (%d songs). Untouched files keep their place on the disc." % (out, rep["total_songs"]))
             self.last_report = rep
+            self.saved_out = os.path.abspath(out)
             return rep
 
         self.start_job("save new ISO", run)
@@ -464,8 +513,8 @@ class MusicKitGui:
         imgui.text("MusicKit")
         imgui.pop_style_color()
         imgui.same_line()
-        imgui.text_colored(_col(GREY), "add, replace, rename, remove and reorder the EA Trax songs of Burnout Revenge "
-                                       "(PS2, PAL or USA)")
+        _text(GREY, "add, replace, rename, remove and reorder the EA Trax songs of Burnout Revenge "
+              "(PS2, PAL or USA)")
         imgui.separator()
         avail = imgui.get_content_region_avail()
         left_w = avail.x * 0.45
@@ -482,9 +531,9 @@ class MusicKitGui:
 
     def step_header(self, n, text, done):
         imgui.spacing()
-        imgui.text_colored(_col(GREEN if done else ACCENT), "%d" % n)
+        _text(GREEN if done else ACCENT, "%d" % n)
         imgui.same_line()
-        imgui.text(text)
+        _text(None, text)
         imgui.separator()
 
     def ui_step1(self):
@@ -499,20 +548,20 @@ class MusicKitGui:
         if self.disc:
             d = self.disc
             n_orig = sum(1 for x in d.songs if x.original)
-            imgui.text_colored(_col(GREEN), "Burnout Revenge %s - %d songs on the disc%s" %
-                               (d.region, d.count, " (%d added or changed earlier with MusicKit)" % (d.count - n_orig)
-                                if d.count != n_orig else ""))
+            _text(GREEN, "Burnout Revenge %s - %d songs on the disc%s" %
+                  (d.region, d.count, " (%d added or changed earlier with MusicKit)" % (d.count - n_orig)
+                  if d.count != n_orig else ""))
             if d.count > core.MAX_SONGS:
-                imgui.text_colored(_col(YELLOW), "! More than %d songs: remove some before saving (shuffle mode "
-                                                 "supports %d at most)." % (core.MAX_SONGS, core.MAX_SONGS))
-            imgui.text_colored(_col(GREY), "The ISO is only read; it is never modified.")
-            imgui.text_colored(_col(GREY), "PCSX2 game CRC %08X is kept, so PCSX2 patches (widescreen ...) still apply."
-                               % d.crc)
-            imgui.text_colored(_col(GREY), "A modified disc never matches the redump checksum (normal for any mod).")
+                _text(YELLOW, "! More than %d songs: remove some before saving (shuffle mode "
+                      "supports %d at most)." % (core.MAX_SONGS, core.MAX_SONGS))
+            _text(GREY, "The ISO is only read; it is never modified.")
+            _text(GREY, "PCSX2 game CRC %08X is kept, so PCSX2 patches (widescreen ...) still apply."
+                  % d.crc)
+            _text(GREY, "A modified disc never matches the redump checksum (normal for any mod).")
         elif self.busy() and self.job.title == "open ISO":
-            imgui.text_colored(_col(YELLOW), "reading the ISO...")
+            _text(YELLOW, "reading the ISO...")
         elif self.disc_error:
-            imgui.text_colored(_col(RED), self.disc_error)
+            _text(RED, self.disc_error)
 
     def ui_step2(self):
         self.step_header(2, "Add songs", bool(self.queue))
@@ -520,9 +569,9 @@ class MusicKitGui:
             self.pick_audio()
         _tip("MP3, FLAC, WAV, OGG, M4A ... (anything ffmpeg reads). You can also drop files on the window.")
         imgui.same_line()
-        imgui.text_colored(_col(GREY), os.path.basename(self.form["path"]) or "no file chosen (or drop one here)")
+        _text(GREY, os.path.basename(self.form["path"]) or "no file chosen (or drop one here)")
         if self.form_error:
-            imgui.text_colored(_col(RED), self.form_error)
+            _text(RED, self.form_error)
         enabled = bool(self.form["path"]) and self.form_info is not None
         imgui.begin_disabled(not enabled)
         for key, label in (("title", "Title"), ("artist", "Artist"), ("album", "Album")):
@@ -540,25 +589,25 @@ class MusicKitGui:
         self.ui_queue()
 
     def ui_quality(self, info, form=None):
-        imgui.text_colored(_col(GREY), "Input:  " + info.describe())
-        imgui.text_colored(_col(GREY), "Game:   PS-ADPCM stereo 32 kHz%s" %
-                           (", loudness matched to the original songs" if self.normalize else ""))
+        _text(GREY, "Input:  " + info.describe())
+        _text(GREY, "Game:   PS-ADPCM stereo 32 kHz%s" %
+              (", loudness matched to the original songs" if self.normalize else ""))
         for lvl, t in info.quality_notes():
             if t.startswith("Encoded as"):
                 continue
-            imgui.text_colored(_col(YELLOW if lvl == "warn" else GREY), ("! " if lvl == "warn" else "- ") + t)
+            _text(YELLOW if lvl == "warn" else GREY, ("! " if lvl == "warn" else "- ") + t)
         if form and self.disc:
             for key in ("title", "artist", "album"):
                 clean = self.disc.sanitize(form[key])
                 if form[key].strip() and clean != form[key].strip():
-                    imgui.text_colored(_col(YELLOW), "! %s shown in game as: %s" % (key, clean))
+                    _text(YELLOW, "! %s shown in game as: %s" % (key, clean))
 
     def ui_queue(self):
         new = self.new_items()
         if not new:
-            imgui.text_colored(_col(GREY), "No songs added yet.")
+            _text(GREY, "No songs added yet.")
             return
-        imgui.text("Songs to add (%d):" % len(new))
+        _text(None, "Songs to add (%d):" % len(new))
         tflags = imgui.TableFlags_.borders_inner_h | imgui.TableFlags_.row_bg | imgui.TableFlags_.resizable
         if imgui.begin_table("queue", 5, tflags):
             imgui.table_setup_column("#", imgui.TableColumnFlags_.width_fixed, 30)
@@ -577,9 +626,9 @@ class MusicKitGui:
                 if imgui.selectable("%s - %s##q%d" % (p.song.artist, p.song.title, i), self.editing is p)[0]:
                     self.editing = p
                 imgui.table_next_column()
-                imgui.text(p.song.album)
+                _text(None, p.song.album)
                 imgui.table_next_column()
-                imgui.text_colored(_col(GREY), p.info.describe() if p.info else (p.error or "?"))
+                _text(GREY, p.info.describe() if p.info else (p.error or "?"))
                 if p.info:
                     _tip("\n".join(t for _, t in p.info.quality_notes()))
                 imgui.table_next_column()
@@ -593,7 +642,7 @@ class MusicKitGui:
             imgui.end_table()
             if remove is not None:
                 self.remove_item(remove)
-        imgui.text_colored(_col(GREY), "Move, rename or replace any song in the song list on the right.")
+        _text(GREY, "Move, rename or replace any song in the song list on the right.")
 
     def ui_editor(self):
         it = self.editing
@@ -601,38 +650,33 @@ class MusicKitGui:
             return
         i = self.items.index(it)
         imgui.separator()
-        imgui.text_colored(_col(ACCENT), "Edit song %d" % (i + 1))
+        _text(ACCENT, "Edit song %d" % (i + 1))
         imgui.same_line()
         if imgui.small_button("Close##edit"):
             self.editing = None
             return
-        target = it.song if isinstance(it, Pending) else it
         for key in core.FIELDS:
             imgui.set_next_item_width(300)
             cur = self.item_text(it, key)
             changed, v = imgui.input_text("%s (all languages)##e" % key.capitalize(), cur)
             if changed:
-                setattr(target, key, v)
-                for d in target.names.values():
-                    d.pop(key, None)
+                self.rename(it, key, v)
         for l in self.disc.langs:
             if imgui.tree_node("%s text##%s" % (core.LANG_NAMES[l], l)):
-                d = target.names.setdefault(l, {})
                 for key in core.FIELDS:
                     imgui.set_next_item_width(300)
                     changed, v = imgui.input_text("%s##%s%s" % (key.capitalize(), l, key), self.item_text(it, key, l))
                     if changed:
-                        d[key] = v
+                        self.rename(it, key, v, l)
                 imgui.tree_pop()
         if isinstance(it, core.SongRef) and imgui.small_button("Restore original names##edit"):
-            it.title = it.artist = it.album = None
-            it.names = {}
+            self.restore_names(it)
         if self.disc:
             for key in core.FIELDS:
                 v = self.item_text(it, key)
                 clean = self.disc.sanitize(v)
                 if v.strip() and clean != v.strip():
-                    imgui.text_colored(_col(YELLOW), "! %s shown in game as: %s" % (key, clean))
+                    _text(YELLOW, "! %s shown in game as: %s" % (key, clean))
 
     def ui_step3(self):
         self.step_header(3, "Save", self.last_report is not None)
@@ -643,41 +687,39 @@ class MusicKitGui:
             self.pick_out()
         same = self.out_path and os.path.abspath(self.out_path) == os.path.abspath(self.iso_path)
         if same:
-            imgui.text_colored(_col(RED), "The output must be a new file (the source ISO is never overwritten).")
+            _text(RED, "The output must be a new file (the source ISO is never overwritten).")
         elif self.out_path and os.path.exists(self.out_path):
-            imgui.text_colored(_col(YELLOW), "This file exists and will be replaced.")
-        ready = self.can_save() and self.out_path and not same and not self.busy()
-        imgui.begin_disabled(not ready)
+            _text(YELLOW, "This file exists and will be replaced.")
+        problem = self.save_problem()
+        imgui.begin_disabled(problem is not None)
         imgui.push_style_color(imgui.Col_.button, _col((0.75, 0.42, 0.08, 1.0)))
         if imgui.button("Save new ISO", imgui.ImVec2(200, 36)):
             self.build()
         imgui.pop_style_color()
         imgui.end_disabled()
+        if problem:
+            _tip(problem[0].upper() + problem[1:])
         size = self.size_plan()
         if self.changed():
             enc = [it for it in self.items if isinstance(it, Pending) or it.audio]
             removed = self.disc.count - len({it.src for it in self.items if isinstance(it, core.SongRef)})
-            imgui.text_colored(_col(GREY), "%d songs: %d new, %d new audio, %d removed%s" % (
+            _text(GREY, "%d songs: %d new, %d new audio, %d removed%s" % (
                 len(self.items), len(self.new_items()), len(enc) - len(self.new_items()), removed,
                 "; %.2f GB" % (size["bytes"] / 1e9) if size else ""))
             w = self.disc.save_warning(self.core_items())
             if w:
-                imgui.push_text_wrap_pos(0)
-                imgui.text_colored(_col(YELLOW), "! " + w)
-                imgui.pop_text_wrap_pos()
+                _text(YELLOW, "! " + w)
         elif self.unlock_pending():
-            imgui.text_colored(_col(GREY), "Song list unchanged: only \"Allow switching any song OFF\" will be applied.")
+            _text(GREY, "Song list unchanged: only \"Allow switching any song OFF\" will be applied.")
         if size:
-            imgui.push_text_wrap_pos(0)
-            imgui.text_colored(_col(GREY if size["fits"] else YELLOW), ("" if size["fits"] else "! ") + size["text"])
-            imgui.pop_text_wrap_pos()
+            _text(GREY if size["fits"] else YELLOW, ("" if size["fits"] else "! ") + size["text"])
         if self.job and (not self.job.done or self.job.title == "save new ISO"):
             imgui.progress_bar(self.job.progress if not self.job.done else 1.0, imgui.ImVec2(-1, 0),
                                self.job.message if not self.job.done else ("done" if self.job.ok else "failed"))
         if self.last_report:
-            imgui.text_colored(_col(GREEN), "Saved %s - %d songs. Burn it or load it in an emulator; "
-                               "the new songs are in Driver Details > EA Trax." %
-                               (os.path.basename(self.out_path), self.last_report["total_songs"]))
+            _text(GREEN, "Saved %s - %d songs. Burn it or load it in an emulator; "
+                  "the new songs are in Driver Details > EA Trax." %
+                  (os.path.basename(self.out_path), self.last_report["total_songs"]))
 
     def ui_song_list(self):
         d = self.disc
@@ -686,7 +728,7 @@ class MusicKitGui:
                 self.reset_list(keep_new=False)
                 self.save_settings()
             imgui.same_line()
-            imgui.text_colored(_col(YELLOW), "Changes are applied when you save the new ISO.")
+            _text(YELLOW, "Changes are applied when you save the new ISO.")
         h = imgui.get_content_region_avail().y * (0.42 if self.editing is not None else 0.62)
         tflags = imgui.TableFlags_.borders_inner_h | imgui.TableFlags_.row_bg | imgui.TableFlags_.scroll_y
         action = None
@@ -694,7 +736,7 @@ class MusicKitGui:
             imgui.table_setup_scroll_freeze(0, 1)
             imgui.table_setup_column("#", imgui.TableColumnFlags_.width_fixed, 28)
             imgui.table_setup_column("Artist / Title / Album")
-            imgui.table_setup_column("Length", imgui.TableColumnFlags_.width_fixed, imgui.calc_text_size("00:00").x)
+            imgui.table_setup_column("Length", imgui.TableColumnFlags_.width_fixed, imgui.calc_text_size("Length").x)
             imgui.table_setup_column("", imgui.TableColumnFlags_.width_fixed,
                                      _bw("Play", "Replace", "Edit", "X") + 2 * (imgui.get_frame_height() + 8))
             imgui.table_headers_row()
@@ -715,16 +757,17 @@ class MusicKitGui:
                         tags.append("renamed")
                     length = it.info.duration if it.audio and getattr(it, "info", None) else s.duration
                     color = GREY if s.original else ACCENT
-                imgui.text_colored(_col(color), "%d" % (i + 1))
+                _text(color, "%d" % (i + 1))
                 imgui.table_next_column()
-                imgui.text("%s - %s" % (self.item_text(it, "artist"), self.item_text(it, "title")))
+                _text(None, "%s - %s" % (self.item_text(it, "artist"), self.item_text(it, "title")))
                 album = self.item_text(it, "album").strip()
                 if album:
-                    imgui.text_colored(_col(GREY), album)
+                    _text(GREY, album)
                 if tags:
-                    if album:
+                    tag = "[%s]" % ", ".join(tags)
+                    if album and imgui.calc_text_size(album + "  " + tag).x < imgui.get_content_region_avail().x:
                         imgui.same_line()
-                    imgui.text_colored(_col(YELLOW), "[%s]" % ", ".join(tags))
+                    _text(YELLOW, tag)
                 imgui.table_next_column()
                 imgui.text("%d:%02d" % (int(length) // 60, int(length) % 60))
                 imgui.table_next_column()
@@ -771,7 +814,7 @@ class MusicKitGui:
     def ui_right(self):
         if imgui.collapsing_header("Song list (as it will be on the new disc)", imgui.TreeNodeFlags_.default_open):
             if not self.disc:
-                imgui.text_colored(_col(GREY), "(select an ISO)")
+                _text(GREY, "(select an ISO)")
             else:
                 self.ui_song_list()
         if imgui.collapsing_header("Options"):
@@ -779,7 +822,7 @@ class MusicKitGui:
             _tip("EBU R128 loudness of every new song is set to the median of the original soundtrack\n"
                  "(constant gain, -1 dBTP ceiling).")
             if self.disc and self.disc.unlocked:
-                imgui.text_colored(_col(GREEN), "This disc already lets you switch every song OFF.")
+                _text(GREEN, "This disc already lets you switch every song OFF.")
             else:
                 _, self.unlock_off = imgui.checkbox("Allow switching any song OFF", self.unlock_off)
                 _tip("In the original game the Song Manager only lets you switch a song OFF after it has played\n"
@@ -793,15 +836,15 @@ class MusicKitGui:
                              (r["median_lufs"], r["min_lufs"], r["max_lufs"]))
                 self.start_job("loudness", run)
             if self.ref_loudness:
-                imgui.text_colored(_col(GREY), "median %.1f LUFS" % self.ref_loudness["median_lufs"])
-            imgui.text_colored(_col(GREY), "Text: up to %d characters, letters the game font has (accents ok)."
-                               % core.MAX_TEXT)
+                _text(GREY, "median %.1f LUFS" % self.ref_loudness["median_lufs"])
+            _text(GREY, "Text: up to %d characters, letters the game font has (accents ok)."
+                  % core.MAX_TEXT)
         if imgui.collapsing_header("Log", imgui.TreeNodeFlags_.default_open):
             imgui.begin_child("log", imgui.ImVec2(0, 0))
             with self.log.lock:
                 lines = list(self.log.lines)[-400:]
             for lv, t, line in lines:
-                imgui.text_colored(_col(RED if lv == "error" else GREY), "%s  %s" % (t, line))
+                _text(RED if lv == "error" else GREY, "%s  %s" % (t, line))
             if imgui.get_scroll_y() >= imgui.get_scroll_max_y() - 4:
                 imgui.set_scroll_here_y(1.0)
             imgui.end_child()
@@ -815,7 +858,7 @@ def _fatal(msg):
         pass
 
 
-def main(shot=None, demo=None):
+def main(shot=None, demo=None, size=None):
     try:
         settings = json.load(open(os.path.join(app_dir(), "settings.json"), encoding="utf-8"))
     except Exception:
@@ -824,7 +867,7 @@ def main(shot=None, demo=None):
         settings = dict(demo)
     log = Log(os.path.join(app_dir(), "gui.log"))
     try:
-        return _run(settings, log, shot)
+        return _run(settings, log, shot, size)
     except Exception:
         tb = traceback.format_exc()
         log(tb, "error")
@@ -835,14 +878,14 @@ def main(shot=None, demo=None):
         return 1
 
 
-def _run(settings, log, shot):
+def _run(settings, log, shot, size=None):
     if not glfw.init():
         raise RuntimeError("could not initialise GLFW")
     glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
     glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
     glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
     glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, gl.GL_TRUE)
-    window = glfw.create_window(1400, 820, TITLE, None, None)
+    window = glfw.create_window(*(size or (1400, 820)), TITLE, None, None)
     if not window:
         raise RuntimeError("could not create an OpenGL 3.3 window")
     glfw.make_context_current(window)
@@ -876,6 +919,7 @@ def _run(settings, log, shot):
             imgui.end_frame()
             glfw.wait_events_timeout(0.2)
             continue
+        idle = not gui.busy()  # the frame drawn now shows the finished state
         gui.ui()
         gl.glViewport(0, 0, fb_w, fb_h)
         gl.glClearColor(0.1, 0.1, 0.12, 1)
@@ -883,7 +927,7 @@ def _run(settings, log, shot):
         imgui.render()
         impl.render(imgui.get_draw_data())
         frames += 1
-        if shot and frames > 30 and not gui.busy():
+        if shot and frames > 30 and idle:
             import numpy as np
             from PIL import Image
             px = gl.glReadPixels(0, 0, fb_w, fb_h, gl.GL_RGB, gl.GL_UNSIGNED_BYTE)

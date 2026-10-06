@@ -106,6 +106,7 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     sub = ap.add_subparsers(dest="cmd")
     p = sub.add_parser("gui"); p.add_argument("--shot", help="render, save a screenshot and exit")
+    p.add_argument("--size", help="window size WIDTHxHEIGHT (default 1400x820)")
     p.add_argument("--demo", help="settings JSON to start with (iso, out, queue, form)")
     p = sub.add_parser("list"); p.add_argument("--iso")
     p = sub.add_parser("info"); p.add_argument("audio")
@@ -136,7 +137,8 @@ def main(argv=None):
     if a.cmd in (None, "gui"):
         from . import gui
         demo = json.load(open(a.demo, encoding="utf-8")) if getattr(a, "demo", None) else None
-        return gui.main(getattr(a, "shot", None), demo)
+        size = tuple(int(v) for v in a.size.lower().split("x")) if getattr(a, "size", None) else None
+        return gui.main(getattr(a, "shot", None), demo, size)
     if a.cmd == "list":
         d = core.Disc(a.iso or load_project(DEFAULT_PROJECT)["iso"])
         print("%d songs (%s%s)" % (d.count, "MusicKit-patched" if d.patched else "original",
