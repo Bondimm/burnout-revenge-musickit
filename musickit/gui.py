@@ -124,6 +124,7 @@ class MusicKitGui:
             if os.path.exists(j.get("path", "")):
                 self.queue.append(Pending(core.NewSong.from_json(j)))
         self.normalize = settings.get("normalize", True)
+        self.unlock_off = settings.get("unlock_off", False)
         self.job = None
         self.dialog = None
         self.form = {"path": "", "title": "", "artist": "", "album": ""}
@@ -143,6 +144,7 @@ class MusicKitGui:
     # ------------------------------------------------------------------ state
     def save_settings(self):
         self.settings.update({"iso": self.iso_path, "out": self.out_path, "normalize": self.normalize,
+                              "unlock_off": self.unlock_off,
                               "queue": [p.song.to_json() for p in self.queue]})
         try:
             json.dump(self.settings, open(os.path.join(app_dir(), "settings.json"), "w", encoding="utf-8"), indent=1)
@@ -299,7 +301,8 @@ class MusicKitGui:
 
     # ------------------------------------------------------------------ build
     def build(self):
-        if not self.disc or not self.queue:
+        unlock = self.unlock_off
+        if not self.disc or not (self.queue or (unlock and not self.disc.unlocked)):
             return
         if os.path.abspath(self.out_path) == os.path.abspath(self.iso_path):
             self.log.error("choose a different output file - the source ISO is never overwritten")
@@ -309,7 +312,9 @@ class MusicKitGui:
         disc = self.disc
 
         def run(job):
-            rep = disc.build(songs, out, self.normalize, job.update)
+            rep = disc.build(songs, out, self.normalize, job.update, unlock_off=unlock)
+            if rep["unlocked"]:
+                self.log("every song can be switched OFF in the Song Manager")
             if "target_lufs" in rep:
                 self.log("loudness target %.1f LUFS (median of the original songs)" % rep["target_lufs"])
             for s in rep["songs"]:
@@ -496,7 +501,9 @@ class MusicKitGui:
             imgui.text_colored(_col(RED), "The output must be a new file (the source ISO is never overwritten).")
         elif self.out_path and os.path.exists(self.out_path):
             imgui.text_colored(_col(YELLOW), "This file exists and will be replaced.")
-        ready = self.disc is not None and bool(self.queue) and self.out_path and not same and not self.busy()
+        unlock_only = self.unlock_off and self.disc is not None and not self.disc.unlocked
+        ready = (self.disc is not None and (bool(self.queue) or unlock_only) and self.out_path and not same
+                 and not self.busy())
         imgui.begin_disabled(not ready)
         imgui.push_style_color(imgui.Col_.button, _col((0.75, 0.42, 0.08, 1.0)))
         if imgui.button("Save new ISO", imgui.ImVec2(200, 36)):
@@ -547,6 +554,13 @@ class MusicKitGui:
                     imgui.end_table()
         if imgui.collapsing_header("Options"):
             _, self.normalize = imgui.checkbox("Match loudness to the original songs", self.normalize)
+            if self.disc and self.disc.unlocked:
+                imgui.text_colored(_col(GREEN), "This disc already lets you switch every song OFF.")
+            else:
+                _, self.unlock_off = imgui.checkbox("Allow switching any song OFF", self.unlock_off)
+                _tip("In the original game the Song Manager only lets you switch a song OFF after it has played\n"
+                     "to the end once. With this option every song can be switched OFF right away.\n"
+                     "Can also be saved on its own, without adding songs.")
             _tip("EBU R128 loudness of every new song is set to the median of the original soundtrack\n"
                  "(constant gain, -1 dBTP ceiling).")
             if self.disc and imgui.button("Measure original loudness"):

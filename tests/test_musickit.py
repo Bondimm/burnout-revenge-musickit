@@ -100,10 +100,10 @@ def _elf_versions():
     out = []
     p = os.path.join(DISC, "SLES_535.07")
     if os.path.exists(p):
-        out.append(("PAL", open(p, "rb").read(), 0x7E83CC5B, 0x460640, 0x4A3680, 0x4F3580, 0))
+        out.append(("PAL", open(p, "rb").read(), 0x7E83CC5B, 0x460640, 0x4A3680, 0x4F3580, 0, 0))
     if os.path.exists(USA_ISO):
         out.append(("USA", iso.IsoImage(USA_ISO).read_file("/SLUS_212.42"), 0xD224D348, 0x4604C0, 0x4A3500,
-                    0x4F3300, -0x80))
+                    0x4F3300, -0x80, 0x28))
     return out
 
 
@@ -112,11 +112,12 @@ def test_elf_patch():
     if not vers:
         import pytest
         pytest.skip("no executable")
-    for name, d, crc, playlist, table, profile, delta in vers:
+    for name, d, crc, playlist, table, profile, delta, row_delta in vers:
         assert elfpatch.crc(d) == crc
         lay = elfpatch.Layout(d)
         assert (lay.playlist, lay.table_new, lay.profile) == (playlist, table, profile), name
-        assert all(v == delta for v in lay.delta.values()), name
+        assert all(v == delta for g, v in lay.delta.items() if g != "trax_row"), name
+        assert lay.delta["trax_row"] == row_delta, name
         out = elfpatch.patch(d, 45)
         assert elfpatch.crc(out) == crc, name            # PCSX2 CRC kept
         e = elfpatch.Elf(out)
@@ -133,6 +134,31 @@ def test_elf_patch():
         assert d[a[1]:a[1] + a[4]] == out[b[1]:b[1] + b[4]]   # second segment moved but unchanged
         out2 = elfpatch.extend(out, 47)
         assert elfpatch.read_song_count(out2) == 47 and elfpatch.crc(out2) == crc and len(out2) == len(out)
+
+
+def test_unlock_off():
+    """The switch-off unlock: two words, any order with patch/extend, PCSX2 CRC kept, idempotent."""
+    vers = _elf_versions()
+    if not vers:
+        import pytest
+        pytest.skip("no executable")
+    for name, d, crc, *_ in vers:
+        lay = elfpatch.Layout(d)
+        assert [lay.elf.r32(va) for va, _, _, _ in lay.unlock_sites()] == [0x32020008, 0x30420001], name
+        assert not elfpatch.is_unlocked(d)
+        u = elfpatch.unlock(d)
+        assert elfpatch.crc(u) == crc and elfpatch.is_unlocked(u), name
+        assert elfpatch.unlock(u) == u                                   # idempotent
+        e, eu = elfpatch.Elf(d), elfpatch.Elf(u)
+        sites = {va for va, _, _, _ in lay.unlock_sites()}
+        s = e.phdrs()[0]
+        diff = [s[2] + i for i in range(0, s[4], 4) if e.r32(s[2] + i) != eu.r32(s[2] + i)]
+        assert set(diff) == sites, name                                  # nothing else in the code changed
+        pu = elfpatch.unlock(elfpatch.patch(d, 43))
+        up = elfpatch.patch(u, 43)
+        for x in (pu, up, elfpatch.extend(pu, 45)):
+            assert elfpatch.crc(x) == crc and elfpatch.is_unlocked(x) and elfpatch.is_patched(x), name
+        assert any(lo <= max(sites) < hi for lo, hi in elfpatch.touched_ranges(pu))
 
 
 def test_udf_tag_crc():
@@ -159,6 +185,17 @@ def test_build_iso_end_to_end():
     song = core.NewSong(os.path.join(tmp, "test_chords_44k_24bit.flac"), "Chord Test", "MusicKit", "Demo")
     d.build([song], out)
     assert validate.validate(ISO, out, log=lambda *a: None)
+    o = core.Disc(out)
+    assert not o.unlocked
+    o.img.f.close()
+    os.remove(out)
+    # unlock only (no new songs): only the executable changes
+    rep = d.build([], out, unlock_off=True)
+    assert rep["unlocked"] and rep["total_songs"] == d.count
+    assert validate.validate(ISO, out, log=lambda *a: None)
+    o = core.Disc(out)
+    assert o.unlocked and o.count == d.count and not o.patched
+    o.img.f.close()
     os.remove(out)
 
 

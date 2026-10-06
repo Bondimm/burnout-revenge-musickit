@@ -28,7 +28,16 @@ PAL_GROUPS = {
     "profile_load": (0x226830, 0x2268B8),   # profile load: apply flags to every song
     "song_manager_toggle": (0x252E18, 0x252E9C),   # Song Manager toggle
     "song_finished": (0x2520E4, 0x252164),   # song finished
+    "trax_row": (0x1A5858, 0x1A5A08),   # Song Manager row: set mode / show mode
 }
+
+# Optional "unlock": the game refuses OFF for a song whose "not heard yet" bit (flags & 8) is set - every original
+# song starts with it and loses it only after playing to the end once. These two words drop that check.
+UNLOCK_PATCHES = [
+    (0x1A58CC, "trax_row", 0x0000102D, "daddu v0,zero,zero  (was andi v0,s0,8: OFF refused for unheard songs)"),
+    (0x1A59FC, "trax_row", 0x24020001, "addiu v0,zero,1  (was andi v0,v0,1: row offers OFF only for heard songs)"),
+]
+_UNLOCK_SITES = {pal for pal, _, _, _ in UNLOCK_PATCHES}
 
 # (PAL vaddr, group, template, meaning). Template: int word, None = keep the original word, or a callable(ctx).
 CODE_PATCHES = [
@@ -191,6 +200,29 @@ class Layout:
         """[(vaddr, PAL vaddr, template, meaning)] for this build."""
         return [(pal + self.delta[g], pal, t, m) for pal, g, t, m in CODE_PATCHES]
 
+    def unlock_sites(self):
+        return [(pal + self.delta[g], pal, t, m) for pal, g, t, m in UNLOCK_PATCHES]
+
+
+def is_unlocked(data):
+    """True if the "switch off unheard songs" unlock is applied."""
+    lay = Layout(data)
+    return all(lay.elf.r32(va) == t for va, _, t, _ in lay.unlock_sites())
+
+
+def unlock(data):
+    """Let the Song Manager switch any song OFF, including original songs not heard yet (same PCSX2 CRC).
+    Works on original and MusicKit-patched executables."""
+    if is_unlocked(data):
+        return bytes(data)
+    lay = Layout(data)
+    e = lay.elf
+    target_crc = crc(data)
+    appended = len(e.d) > e.content_end()     # a compensation word is already there
+    for va, _, t, _ in lay.unlock_sites():
+        e.w32(va, t)
+    return _fix_crc(e.d, target_crc, appended)
+
 
 def is_patched(data):
     e = Elf(data)
@@ -299,6 +331,8 @@ def touched_ranges(data):
     """Virtual address ranges MusicKit writes (for conflict checks against PCSX2 pnach patches)."""
     lay = Layout(data)
     r = [(va, va + 4) for va, _, t, _ in lay.sites() if t is not None]
+    if is_unlocked(data):
+        r += [(va, va + 4) for va, _, _, _ in lay.unlock_sites()]
     r += [(lay.playlist + 4, lay.playlist + 8), (lay.playlist + 0x4C, lay.playlist + 0x50),
           (lay.hole_start, lay.hole_end)]
     return r
@@ -319,8 +353,12 @@ def gen_signatures(pal_data, path=None):
     import json
     import os
     e = Elf(pal_data)
-    orig = {g: [[e.r32(va) & _mask_of(e.r32(va)), _mask_of(e.r32(va))] for va in range(a, b, 4)]
-            for g, (a, b) in PAL_GROUPS.items()}
+    def sig(w, va, m=None):
+        if va in _UNLOCK_SITES:            # optional patch sites: match either state
+            return [0, 0]
+        m = _mask_of(w) if m is None else m
+        return [w & m, m]
+    orig = {g: [sig(e.r32(va), va) for va in range(a, b, 4)] for g, (a, b) in PAL_GROUPS.items()}
     global PAL_SIGNATURES
     PAL_SIGNATURES = orig
     pe = Elf(patch(pal_data, ORIGINAL_SONGS + 1))
@@ -330,8 +368,7 @@ def gen_signatures(pal_data, path=None):
         patched[g] = []
         for va in range(a, b, 4):
             w = pe.r32(va)
-            m = 0xFFFF0000 if va in var else _mask_of(w)
-            patched[g].append([w & m, m])
+            patched[g].append(sig(w, va, 0xFFFF0000 if va in var else None))
     path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "signatures.json")
     json.dump({"original": orig, "patched": patched}, open(path, "w"))
     return path

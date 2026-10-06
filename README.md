@@ -81,7 +81,7 @@ game's font does not have are replaced by the closest one (accents are kept).
 musickit-cli.bat list     --iso "Burnout Revenge (Europe).iso"
 musickit-cli.bat add      song.flac --title "My Song" --artist "My Band" --album "My Album"
 musickit-cli.bat queue
-musickit-cli.bat build    --iso "Burnout Revenge (Europe).iso" --out "Burnout Revenge (MusicKit).iso"
+musickit-cli.bat build    --iso "Burnout Revenge (Europe).iso" --out "Burnout Revenge (MusicKit).iso" [--unlock-off]
 musickit-cli.bat validate "Burnout Revenge (Europe).iso" "Burnout Revenge (MusicKit).iso"
 ```
 
@@ -100,6 +100,17 @@ image — it simply is not the original pressing anymore. It does not affect the
 songs default to *ALL* (menus and races) and can be changed in the Song Manager.
 
 **My songs don't show up.** Make sure you started the *new* `.iso`, and look at the end of the Song Manager list.
+
+**I can't switch some original songs OFF.** That is how the original game works: the Song Manager only lets you
+switch a song OFF after it has played to the end once (until then it can only be set to ALL / Menu only / Race
+only). Songs added with MusicKit are never locked. To lift the lock for every song, tick **Options → Allow
+switching any song OFF** before saving (command line: `build --unlock-off`). It can also be the only change: open
+your image, tick the option and save, no new songs needed. The PCSX2 game CRC stays the same.
+
+## Thanks
+
+- [porkuskorpz](https://github.com/porkuskorpz) (u/porkuskorpz) for in-game testing and the detailed report that
+  led to the *Allow switching any song OFF* option.
 
 ## Legal
 

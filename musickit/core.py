@@ -100,6 +100,7 @@ class Disc:
         except Exception as exc:
             raise ValueError("unsupported game executable %s: %s" % (name, exc))
         self.patched = elfpatch.is_patched(self.elf)
+        self.unlocked = elfpatch.is_unlocked(self.elf)
         self.langs = tuple(l for l in LANGS if "/LANGUAGE/STRINGS/MAIN%s.BIN" % l in self.img.entries)
         if not self.langs:
             raise ValueError("no string tables found")
@@ -174,17 +175,39 @@ class Disc:
         return res
 
     # ------------------------------------------------------------------ build
-    def build(self, new_songs, out_path, normalize=True, progress=None):
-        """Encode `new_songs` and write a new ISO. Returns a report dict."""
+    def build(self, new_songs, out_path, normalize=True, progress=None, unlock_off=False):
+        """Encode `new_songs` and write a new ISO. Returns a report dict.
+        unlock_off: let the Song Manager switch every song OFF (the game normally refuses OFF for songs not
+        heard to the end yet). Can be the only change."""
         prog = progress or (lambda f, m: None)
-        if not new_songs:
-            raise ValueError("no songs to add")
+        unlock_off = unlock_off and not self.unlocked
+        if not new_songs and not unlock_off:
+            raise ValueError("nothing to do: add songs or choose the switch-off unlock")
         if os.path.abspath(out_path) == os.path.abspath(self.path):
             raise ValueError("the output must be a new file (the source ISO is never modified)")
         total = self.count + len(new_songs)
         if total > MAX_SONGS:
             raise ValueError("too many songs (max %d in total, %d new)" % (MAX_SONGS, MAX_SONGS - self.count))
-        report = {"songs": []}
+        report = {"songs": [], "unlocked": unlock_off or self.unlocked}
+        reps = {}
+        if new_songs:
+            self._build_songs(new_songs, normalize, prog, report, reps)
+        # 4. executable
+        elf = self.elf
+        if new_songs:
+            elf = elfpatch.extend(elf, total) if self.patched else elfpatch.patch(elf, total)
+        if unlock_off:
+            elf = elfpatch.unlock(elf)
+        reps[self.elf_path] = elf
+        assert elfpatch.crc(reps[self.elf_path]) == self.crc   # PCSX2 game CRC unchanged
+        # 5. image
+        placed = self.img.build(out_path, reps, lambda f, m: prog(0.55 + 0.45 * f, m))
+        report["placed"] = {k: v for k, v in placed.items()}
+        report["total_songs"] = total
+        return report
+
+    def _build_songs(self, new_songs, normalize, prog, report, reps):
+        """Steps 1-3 of build(): encode the new songs, new _EATRAX1.RWS, string tables (into `reps`)."""
         target = None
         if normalize:
             ref = self.reference_loudness(lambda f, m: prog(0.15 * f, m))
@@ -214,7 +237,7 @@ class Disc:
             old_data = f.read(old_hdr.data_size())
         rws_blob = new_head + old_data + b"".join(p for p, _ in payloads)
         # 3. strings
-        reps = {RWS_FILES[1]: rws_blob}
+        reps[RWS_FILES[1]] = rws_blob
         for l in self.langs:
             t = strtable.StringTable(self.img.read_file("/LANGUAGE/STRINGS/MAIN%s.BIN" % l))
             for k, s in enumerate(new_songs):
@@ -223,17 +246,6 @@ class Disc:
                 t.set("EATraxArtist%d" % n, self.sanitize(s.text(l, "artist")) or " ")
                 t.set("EATraxAlbum%d" % n, self.sanitize(s.text(l, "album")) or " ")
             reps["/LANGUAGE/STRINGS/MAIN%s.BIN" % l] = t.build()
-        # 4. executable
-        if self.patched:
-            reps[self.elf_path] = elfpatch.extend(self.elf, total)
-        else:
-            reps[self.elf_path] = elfpatch.patch(self.elf, total)
-        assert elfpatch.crc(reps[self.elf_path]) == self.crc   # PCSX2 game CRC unchanged
-        # 5. image
-        placed = self.img.build(out_path, reps, lambda f, m: prog(0.55 + 0.45 * f, m))
-        report["placed"] = {k: v for k, v in placed.items()}
-        report["total_songs"] = total
-        return report
 
     def _boot_elf(self):
         try:
