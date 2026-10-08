@@ -1,0 +1,71 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-latest = Apple Silicon (arm64), macos-15-intel = Intel (x86_64)
+        os: [windows-latest, macos-latest, macos-15-intel]
+        python: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install packages and ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          choco install ffmpeg -y --no-progress
+
+      - name: Run setup.command (the macOS installer, downloads ffmpeg into ./ffmpeg/bin)
+        if: runner.os == 'macOS'
+        env:
+          MUSICKIT_NO_PAUSE: "1"
+          MUSICKIT_FFMPEG_DOWNLOAD: "1"
+        run: ./setup.command
+
+      - name: Check the macOS launchers and ffmpeg
+        if: runner.os == 'macOS'
+        run: |
+          test -x setup.command && test -x MusicKit.command && test -x musickit-cli.sh
+          .venv/bin/python --version
+          file ffmpeg/bin/ffmpeg ffmpeg/bin/ffprobe
+          ffmpeg/bin/ffmpeg -hide_banner -version | head -n 1
+          ./musickit-cli.sh --help > /dev/null
+          MUSICKIT_NO_PAUSE=1 ./setup.command   # a second run only checks (idempotent)
+
+      - name: Tests (disc tests skip without an ISO)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then PY=python; else PY=.venv/bin/python; fi
+          "$PY" -m pytest -v -rs tests
+
+      - name: GUI screenshot (macOS, needs an OpenGL context on the runner)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: .venv/bin/python -m musickit gui --shot gui.png && file gui.png
+
+      - name: Upload the GUI screenshot
+        if: runner.os == 'macOS' && hashFiles('gui.png') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-${{ matrix.os }}-py${{ matrix.python }}
+          path: gui.png
+          retention-days: 7
