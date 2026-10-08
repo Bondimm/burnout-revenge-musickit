@@ -97,14 +97,14 @@ you want and save your game.
 
 | What | Details |
 |---|---|
-| Operating system | Windows 10 or 11 (64-bit), or macOS 14 Sonoma or newer (Apple Silicon or Intel) |
+| Operating system | Windows 10 or 11 (64-bit), macOS 14 Sonoma or newer (Apple Silicon or Intel), or 64-bit Linux (x86_64 or aarch64, glibc 2.28+; tested on Ubuntu 22.04 / 24.04) |
 | Python | 3.11 or newer — <https://www.python.org/downloads/> |
-| Python packages | installed automatically by `setup.bat` / `setup.command` into a private `.venv`: numpy, numba, glfw, PyOpenGL, imgui-bundle, Pillow, soundfile, pyloudnorm, pycdlib, pytest (see [requirements.txt](requirements.txt)) |
-| ffmpeg | downloaded automatically by `setup.bat` / `setup.command` (or install it yourself: Windows `winget install Gyan.FFmpeg`, macOS `brew install ffmpeg`) |
+| Python packages | installed automatically by `setup.bat` / `setup.command` / `setup.sh` into a private `.venv`: numpy, numba, glfw, PyOpenGL, imgui-bundle, Pillow, soundfile, pyloudnorm, pycdlib, pytest (see [requirements.txt](requirements.txt)) |
+| ffmpeg | downloaded automatically by `setup.bat` / `setup.command` / `setup.sh` (or install it yourself: Windows `winget install Gyan.FFmpeg`, macOS `brew install ffmpeg`, Linux your package manager, e.g. `sudo apt install ffmpeg`) |
 | Graphics | any GPU with OpenGL 3.3 (for the MusicKit window) |
 | Disk space | about 5 GB free for the new disc image (~4.2 GB) plus ~1 GB for Python packages and ffmpeg |
 | The game | your own disc image (.iso) of Burnout Revenge for PS2: PAL `SLES-53507` or USA `SLUS-21242` |
-| Internet | only once, during `setup.bat` / `setup.command` |
+| Internet | only once, during `setup.bat` / `setup.command` / `setup.sh` |
 
 ## Installation (Windows 10 / 11)
 
@@ -139,6 +139,30 @@ For Apple Silicon (M1 and newer) and Intel Macs with macOS 14 Sonoma or newer.
 4. Start **`MusicKit.command`** and keep its Terminal window open while you use MusicKit. Settings and the log
    (`gui.log`) are kept in `~/Library/Application Support/musickit`.
 
+## Installation (Linux)
+
+For 64-bit Linux on x86_64 or aarch64 (glibc 2.28 or newer; Alpine / musl is not supported). Tested in CI on
+Ubuntu 22.04 and 24.04 (x86_64); other distributions (Debian, Fedora, Arch, openSUSE, Mint, ...) should work the same way.
+
+1. Install the system packages. Python 3.11 or newer, and on Debian / Ubuntu the separate `venv` package:
+   - Debian / Ubuntu / Mint: `sudo apt install python3 python3-venv python3-pip libgl1 libegl1 libxkbcommon0 zenity`
+   - Fedora: `sudo dnf install python3 python3-pip mesa-libGL mesa-libEGL libxkbcommon zenity`
+   - Arch / Manjaro: `sudo pacman -S python python-pip mesa libglvnd libxkbcommon zenity`
+   - Ubuntu 22.04 has Python 3.10 only: add Python 3.11+ first (deadsnakes PPA, or <https://www.python.org/downloads/>).
+   - The window needs OpenGL 3.3 (Mesa or the GPU driver) and an X11 or Wayland session. **`zenity`** (or `kdialog`
+     on KDE) is used for the file and folder dialogs; without it, the dialogs do not open. The GLFW and
+     imgui-bundle wheels bring everything else. A sound player (`paplay`, `aplay` or `ffplay`) is used for previews.
+2. Download this repository (green **Code** button → *Download ZIP*) and unpack it, or `git clone` it.
+3. Open a terminal in the folder and run **`./setup.sh`** once. It creates a private Python environment in `.venv` and downloads **ffmpeg** into the `ffmpeg` folder (an ffmpeg installed with your package manager is used instead
+   when present).
+   Nothing is installed system-wide. If you get *"Permission denied"*, run `chmod +x *.sh` first.
+   - If the ffmpeg download fails, install ffmpeg with your package manager (`sudo apt install ffmpeg`, `sudo dnf install ffmpeg`,
+     `sudo pacman -S ffmpeg`), then run `./setup.sh` again.
+4. Start **`./MusicKit.sh`** and keep the terminal open while you use MusicKit. Settings and the log (`gui.log`) are kept in
+   `~/.config/musickit` (or `$XDG_CONFIG_HOME/musickit`).
+
+The Windows version also runs under Wine, but use the native Linux version.
+
 ## Sound quality
 
 The game streams its music as **PS2 ADPCM, stereo, 32 kHz** — every song is converted to that format:
@@ -156,8 +180,8 @@ game's font does not have are replaced by the closest one (accents are kept).
 
 ## Command line (optional)
 
-Everything the window does is also available from `musickit-cli.bat` (Windows) or `./musickit-cli.sh` (macOS,
-in Terminal). Song numbers are positions in the pending list shown by `queue` (the same as `list` until you change
+Everything the window does is also available from `musickit-cli.bat` (Windows) or `./musickit-cli.sh` (macOS / Linux,
+in a terminal). Song numbers are positions in the pending list shown by `queue` (the same as `list` until you change
 something).
 
 | Task | Command |

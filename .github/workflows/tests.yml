@@ -15,9 +15,11 @@ jobs:
       fail-fast: false
       matrix:
         # macos-latest = Apple Silicon (arm64), macos-15-intel = Intel (x86_64)
-        os: [windows-latest, macos-latest, macos-15-intel]
+        # ubuntu-latest = 24.04 x86_64; ubuntu-24.04-arm = Linux aarch64 (free for public repos)
+        os: [windows-latest, macos-latest, macos-15-intel, ubuntu-22.04, ubuntu-latest, ubuntu-24.04-arm]
         python: ["3.11", "3.13"]
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'ubuntu-24.04-arm' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -50,6 +52,29 @@ jobs:
           ./musickit-cli.sh --help > /dev/null
           MUSICKIT_NO_PAUSE=1 ./setup.command   # a second run only checks (idempotent)
 
+      - name: System libraries (Linux, for the GUI screenshot only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb libgl1 libegl1 libgl1-mesa-dri libxkbcommon0 zenity
+
+      - name: Run setup.sh (the Linux installer, downloads ffmpeg into ./ffmpeg/bin)
+        if: runner.os == 'Linux'
+        env:
+          MUSICKIT_NO_PAUSE: "1"
+          MUSICKIT_FFMPEG_DOWNLOAD: "1"
+        run: ./setup.sh
+
+      - name: Check the Linux launchers and ffmpeg
+        if: runner.os == 'Linux'
+        run: |
+          test -x setup.sh && test -x MusicKit.sh && test -x musickit-cli.sh
+          .venv/bin/python --version
+          file ffmpeg/bin/ffmpeg ffmpeg/bin/ffprobe
+          ffmpeg/bin/ffmpeg -hide_banner -version | head -n 1
+          ./musickit-cli.sh --help > /dev/null
+          MUSICKIT_NO_PAUSE=1 ./setup.sh   # a second run only checks (idempotent)
+
       - name: Tests (disc tests skip without an ISO)
         shell: bash
         run: |
@@ -62,8 +87,14 @@ jobs:
         timeout-minutes: 5
         run: .venv/bin/python -m musickit gui --shot gui.png && file gui.png
 
+      - name: GUI screenshot (Linux, xvfb + Mesa software rendering)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: xvfb-run -a .venv/bin/python -m musickit gui --shot gui.png && file gui.png
+
       - name: Upload the GUI screenshot
-        if: runner.os == 'macOS' && hashFiles('gui.png') != ''
+        if: runner.os != 'Windows' && hashFiles('gui.png') != ''
         uses: actions/upload-artifact@v4
         with:
           name: gui-${{ matrix.os }}-py${{ matrix.python }}
