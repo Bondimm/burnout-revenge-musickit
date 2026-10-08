@@ -51,7 +51,8 @@ def _close(g):
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
-    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))   # settings + log of this test only
+    for var in ("APPDATA", "XDG_CONFIG_HOME", "HOME"):   # settings + log of this test only (any OS)
+        monkeypatch.setenv(var, str(tmp_path / "appdata"))
     import make_test_songs
     songs = tmp_path / "songs"
     make_test_songs.main(str(songs))

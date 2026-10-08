@@ -1,2 +1,5 @@
 # Windows batch files need CRLF line endings (also in GitHub ZIP downloads)
 *.bat text eol=crlf
+# macOS/Linux shell scripts need LF line endings
+*.command text eol=lf
+*.sh text eol=lf

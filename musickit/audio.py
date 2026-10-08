@@ -8,7 +8,9 @@ loudnorm in linear mode (pure gain) plus a -1 dBTP ceiling.
 """
 import json
 import os
+import shutil
 import subprocess
+import sys
 
 import numpy as np
 
@@ -16,23 +18,32 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS = os.path.dirname(HERE)
 TARGET_RATE = 32000
 TARGET_CHANNELS = 2
-_CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+# Windows: run ffmpeg without flashing a console window (the GUI runs under pythonw).
+_NO_WINDOW = {"creationflags": 0x08000000} if os.name == "nt" else {}
 
 
 def ffmpeg_exe(name="ffmpeg"):
-    # ffmpeg next to the tool (ffmpeg/, ffmpeg/bin/), next to its parent folder, then PATH.
-    cands = []
+    """ffmpeg/ffprobe next to the tool (ffmpeg/, ffmpeg/bin/), next to its parent folder, on PATH, then in the
+    Homebrew folders (a GUI started from Finder may not have them on PATH)."""
+    exe = name + ".exe" if os.name == "nt" else name
     for base in (HERE, TOOLS):
         for sub in ("ffmpeg", os.path.join("ffmpeg", "bin")):
-            cands += [os.path.join(base, sub, name + ".exe"), os.path.join(base, sub, name)]
-    for cand in cands:
-        if os.path.exists(cand):
-            return cand
+            cand = os.path.join(base, sub, exe)
+            if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                return cand
+    found = shutil.which(name)
+    if found:
+        return found
+    if os.name != "nt":
+        for d in ("/opt/homebrew/bin", "/usr/local/bin"):
+            cand = os.path.join(d, name)
+            if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                return cand
     return name
 
 
 def _run(args, input_bytes=None):
-    p = subprocess.run(args, input=input_bytes, capture_output=True, creationflags=_CREATE_NO_WINDOW)
+    p = subprocess.run(args, input=input_bytes, capture_output=True, **_NO_WINDOW)
     if p.returncode != 0:
         raise RuntimeError("%s failed: %s" % (os.path.basename(args[0]), p.stderr.decode("utf-8", "replace")[-800:]))
     return p
@@ -108,7 +119,7 @@ def resampler():
     if _RESAMPLER is None:
         try:
             p = subprocess.run([ffmpeg_exe(), "-hide_banner", "-buildconf"], capture_output=True,
-                               creationflags=_CREATE_NO_WINDOW)
+                               **_NO_WINDOW)
             has_soxr = b"enable-libsoxr" in p.stdout + p.stderr
         except OSError:
             has_soxr = False
@@ -141,7 +152,7 @@ def loudnorm_filter(path, target_lufs, true_peak=-1.0):
     """Two-pass ffmpeg loudnorm (linear = constant gain when possible)."""
     p = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", path, "-vn", "-af",
                         "loudnorm=I=%.1f:TP=%.1f:LRA=20:print_format=json" % (target_lufs, true_peak),
-                        "-f", "null", "-"], capture_output=True, creationflags=_CREATE_NO_WINDOW)
+                        "-f", "null", "-"], capture_output=True, **_NO_WINDOW)
     err = p.stderr.decode("utf-8", "replace")
     j = json.loads(err[err.rindex("{"):err.rindex("}") + 1])
     return ("loudnorm=I=%.1f:TP=%.1f:LRA=20:measured_I=%s:measured_TP=%s:measured_LRA=%s:measured_thresh=%s:"
@@ -158,3 +169,47 @@ def prepare(path, target_lufs=None, normalize=True):
     x = decode(path, filters=filt)
     pcm = np.clip(np.round(x * 32767.0), -32768, 32767).astype(np.int16)
     return pcm, in_lufs
+
+
+class Player:
+    """Plays one WAV file in the background, stoppable (the Play/Stop buttons): winsound on Windows, afplay on
+    macOS, paplay/aplay/ffplay on Linux."""
+
+    def __init__(self):
+        self.proc = None
+
+    @staticmethod
+    def command(path):
+        if sys.platform == "darwin":
+            return ["afplay", path]
+        for exe, args in (("paplay", []), ("aplay", ["-q"]),
+                          ("ffplay", ["-nodisp", "-autoexit", "-loglevel", "quiet"])):
+            found = shutil.which(exe)
+            if found:
+                return [found] + args + [path]
+        return None
+
+    def play(self, path):
+        self.stop()
+        if os.name == "nt":
+            import winsound
+            winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            return
+        cmd = self.command(path)
+        if cmd is None:
+            raise RuntimeError("no audio player found (install pulseaudio-utils, alsa-utils or ffplay)")
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+
+    def stop(self):
+        if os.name == "nt":
+            import winsound
+            winsound.PlaySound(None, 0)
+            return
+        p, self.proc = self.proc, None
+        if p is not None and p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(2)
+            except subprocess.TimeoutExpired:
+                p.kill()

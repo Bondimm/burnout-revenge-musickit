@@ -1,9 +1,11 @@
 """MusicKit desktop GUI: 1) select the Burnout Revenge ISO, 2) add songs, 3) save a new ISO. The song list on the
 right replaces, renames, removes and reorders any song (changes are applied when the new ISO is saved).
 
-Launch: MusicKit.bat in the project root (or `musickit gui`).
+Launch: MusicKit.bat (Windows) / MusicKit.command (macOS) in the project root (or `musickit gui`).
 Same GLFW + OpenGL 3.3 + Dear ImGui stack as carkit. Long operations run on a worker thread; messages go to the
-log panel and %APPDATA%\\musickit\\gui.log. The source ISO is only read; the result is always a new file.
+log panel and gui.log in the settings folder (app_dir: %APPDATA%\\musickit on Windows,
+~/Library/Application Support/musickit on macOS, ~/.config/musickit on Linux).
+The source ISO is only read; the result is always a new file.
 """
 from __future__ import annotations
 
@@ -33,7 +35,13 @@ AUDIO_FILTERS = ["Audio files", "*.mp3 *.flac *.wav *.ogg *.m4a *.aac *.opus *.w
 
 
 def app_dir():
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    """Settings + log folder (see the module docstring)."""
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     d = os.path.join(base, "musickit")
     os.makedirs(d, exist_ok=True)
     return d
@@ -161,6 +169,7 @@ class MusicKitGui:
         self.ref_loudness = None
         self.last_report = None
         self.playing = None
+        self.player = audio.Player()
         self.saved_out = None  # last image saved in this session
         self.load_disc(self.iso_path)
         if settings.get("form"):
@@ -431,14 +440,11 @@ class MusicKitGui:
 
     # ------------------------------------------------------------------ playback
     def play_wav(self, path, label):
-        import winsound
-        winsound.PlaySound(None, 0)
-        winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        self.player.play(path)
         self.playing = label
 
     def stop(self):
-        import winsound
-        winsound.PlaySound(None, 0)
+        self.player.stop()
         self.playing = None
 
     def preview_original(self, idx):
@@ -852,8 +858,18 @@ class MusicKitGui:
 
 def _fatal(msg):
     try:
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(None, msg[-3000:], "MusicKit error", 0x10)
+        sys.stderr.write(msg + "\n")   # under pythonw there is no console (sys.stderr is None)
+    except Exception:
+        pass
+    try:
+        if os.name == "nt":
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, msg[-3000:], "MusicKit error", 0x10)
+        elif sys.platform == "darwin":
+            import subprocess
+            subprocess.run(["osascript", "-e", 'display alert "MusicKit error" message '
+                            '(system attribute "MUSICKIT_MSG") as critical'],
+                           env=dict(os.environ, MUSICKIT_MSG=msg[-3000:]), timeout=3600)
     except Exception:
         pass
 
@@ -885,6 +901,7 @@ def _run(settings, log, shot, size=None):
     glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
     glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
     glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, gl.GL_TRUE)
+    # OpenGL 3.3 core + forward compatible: the only modern profile macOS offers (also fine on Windows/Linux).
     window = glfw.create_window(*(size or (1400, 820)), TITLE, None, None)
     if not window:
         raise RuntimeError("could not create an OpenGL 3.3 window")
@@ -895,7 +912,9 @@ def _run(settings, log, shot, size=None):
     io.config_flags |= imgui.ConfigFlags_.nav_enable_keyboard
     io.set_ini_filename("")
     sx, _ = glfw.get_window_content_scale(window)
-    if sx and sx > 1.01:
+    # Windows/Linux HiDPI: window size = framebuffer size in pixels -> scale the UI. macOS Retina: the window size
+    # is in points and only the framebuffer is larger -> ImGui already draws at the right size (sharp text).
+    if sx and sx > 1.01 and glfw.get_framebuffer_size(window)[0] <= glfw.get_window_size(window)[0] * 1.01:
         imgui.get_style().scale_all_sizes(sx)
         imgui.get_style().font_scale_dpi = sx
     impl = GlfwRenderer(window)

@@ -97,14 +97,14 @@ you want and save your game.
 
 | What | Details |
 |---|---|
-| Operating system | Windows 10 or 11 (64-bit) |
+| Operating system | Windows 10 or 11 (64-bit), or macOS 14 Sonoma or newer (Apple Silicon or Intel) |
 | Python | 3.11 or newer — <https://www.python.org/downloads/> |
-| Python packages | installed automatically by `setup.bat` into a private `.venv`: numpy, numba, glfw, PyOpenGL, imgui-bundle, Pillow, soundfile, pyloudnorm, pycdlib, pytest (see [requirements.txt](requirements.txt)) |
-| ffmpeg | downloaded automatically by `setup.bat` (or install it yourself: `winget install Gyan.FFmpeg`) |
+| Python packages | installed automatically by `setup.bat` / `setup.command` into a private `.venv`: numpy, numba, glfw, PyOpenGL, imgui-bundle, Pillow, soundfile, pyloudnorm, pycdlib, pytest (see [requirements.txt](requirements.txt)) |
+| ffmpeg | downloaded automatically by `setup.bat` / `setup.command` (or install it yourself: Windows `winget install Gyan.FFmpeg`, macOS `brew install ffmpeg`) |
 | Graphics | any GPU with OpenGL 3.3 (for the MusicKit window) |
 | Disk space | about 5 GB free for the new disc image (~4.2 GB) plus ~1 GB for Python packages and ffmpeg |
 | The game | your own disc image (.iso) of Burnout Revenge for PS2: PAL `SLES-53507` or USA `SLUS-21242` |
-| Internet | only once, during `setup.bat` |
+| Internet | only once, during `setup.bat` / `setup.command` |
 
 ## Installation (Windows 10 / 11)
 
@@ -115,6 +115,29 @@ you want and save your game.
    - If the ffmpeg download fails, install it yourself (`winget install Gyan.FFmpeg`) or put `ffmpeg.exe` and
      `ffprobe.exe` into `ffmpeg\bin`.
 4. Start **`MusicKit.bat`**.
+
+## Installation (macOS)
+
+For Apple Silicon (M1 and newer) and Intel Macs with macOS 14 Sonoma or newer.
+
+1. Install **Python 3.11 or newer** from <https://www.python.org/downloads/macos/> (or with
+   [Homebrew](https://brew.sh): `brew install python`).
+2. Download this repository (green **Code** button → *Download ZIP*) and unpack it, or `git clone` it.
+3. Double-click **`setup.command`** once. It opens a Terminal window, creates a private Python environment in
+   `.venv` and downloads **ffmpeg** into the `ffmpeg` folder (an ffmpeg installed with Homebrew is used instead
+   when present). Nothing is installed system-wide.
+   - **First start:** macOS blocks scripts downloaded from the internet (*"cannot be opened because it is from an
+     unidentified developer"* / *"Apple could not verify …"*). Right-click (Control-click) `setup.command` →
+     **Open** → **Open**. On macOS 15 and newer, if there is no *Open* button: try to open it once, then go to
+     *System Settings → Privacy & Security* and click **Open Anyway**. Or clear the download flag of the whole
+     folder once in Terminal: `xattr -dr com.apple.quarantine ` followed by the folder (drag it into the Terminal
+     window), then Return.
+   - If the ffmpeg download fails, install ffmpeg with Homebrew: `brew install ffmpeg`, then run `setup.command`
+     again.
+   - If macOS says the file *"could not be executed because you do not have appropriate access privileges"*, the
+     unpacking lost the permissions: run `chmod +x *.command *.sh` in Terminal inside the folder.
+4. Start **`MusicKit.command`** and keep its Terminal window open while you use MusicKit. Settings and the log
+   (`gui.log`) are kept in `~/Library/Application Support/musickit`.
 
 ## Sound quality
 
@@ -133,8 +156,9 @@ game's font does not have are replaced by the closest one (accents are kept).
 
 ## Command line (optional)
 
-Everything the window does is also available from `musickit-cli.bat`. Song numbers are positions in the pending
-list shown by `queue` (the same as `list` until you change something).
+Everything the window does is also available from `musickit-cli.bat` (Windows) or `./musickit-cli.sh` (macOS,
+in Terminal). Song numbers are positions in the pending list shown by `queue` (the same as `list` until you change
+something).
 
 | Task | Command |
 |---|---|
