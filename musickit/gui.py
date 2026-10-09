@@ -2,7 +2,7 @@
 right replaces, renames, removes and reorders any song (changes are applied when the new ISO is saved).
 
 Launch: MusicKit.bat (Windows) / MusicKit.command (macOS) in the project root (or `musickit gui`).
-Same GLFW + OpenGL 3.3 + Dear ImGui stack as carkit. Long operations run on a worker thread; messages go to the
+Same GLFW + OpenGL 3.3 + Dear ImGui stack as the other kits. Long operations run on a worker thread; messages go to the
 log panel and gui.log in the settings folder (app_dir: %APPDATA%\\musickit on Windows,
 ~/Library/Application Support/musickit on macOS, ~/.config/musickit on Linux).
 The source ISO is only read; the result is always a new file.
