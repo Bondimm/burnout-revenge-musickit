@@ -20,7 +20,7 @@ import tempfile
 
 import numpy as np
 
-from . import audio, elfpatch, iso, rws, strtable
+from . import audio, elfpatch, hostfs, iso, rws, strtable
 
 LANGS = ("UK", "FR", "GE", "US")          # all string tables MusicKit knows (a disc has a subset)
 LANG_NAMES = {"UK": "English", "FR": "French", "GE": "German", "US": "English (USA)"}
@@ -36,6 +36,8 @@ DVD5_SECTORS = 2295104   # single-layer DVD (4,700,372,992 bytes)
 ADPCM_BYTES_PER_SEC = 32000 * 2 * 16 / 28    # stereo PS-ADPCM at 32 kHz (~36.6 KB/s)
 TYPICAL_SONG_SECONDS = 210
 DEFAULT_ISO = ""  # no default: the user picks their own disc image
+GAME = "Burnout Revenge"         # name of the HostFS boot image: "Burnout Revenge (HostFS).iso"
+NAHELAM_DIR = "Burnout Revenge"  # folder of the HostFS cheats for this game in Nahelam's repository
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
 
 
@@ -44,6 +46,26 @@ def default_output(src):
     if base.endswith(" (MusicKit)"):
         return base + ext
     return base + " (MusicKit)" + (ext or ".iso")
+
+
+def default_folder(src):
+    """Suggested HostFS folder for the ISO `src`: next to it, "<iso name> (HostFS)"."""
+    base = os.path.splitext(os.path.abspath(src))[0]
+    if base.endswith(" (MusicKit)"):
+        base = base[:-len(" (MusicKit)")]
+    return base + " (HostFS)"
+
+
+def open_image(path):
+    """The disc image (iso.IsoImage) or HostFS game folder (hostfs.FolderImage) at `path`."""
+    if os.path.isdir(path):
+        return hostfs.FolderImage(path)
+    return iso.IsoImage(path)
+
+
+def span(img, path):
+    """(file on this computer, byte offset) of the disc file `path` in a disc image or game folder."""
+    return img.span(path) if getattr(img, "is_folder", False) else hostfs.iso_span(img, path)
 
 
 class Song:
@@ -136,7 +158,8 @@ class NewSong:
 class Disc:
     def __init__(self, path):
         self.path = path
-        self.img = iso.IsoImage(path)
+        self.img = open_image(path)
+        self.is_folder = getattr(self.img, "is_folder", False)
         self.elf_path = self._boot_elf()
         for p in (self.elf_path,) + RWS_FILES:
             if p not in self.img.entries:
@@ -208,7 +231,7 @@ class Disc:
 
     def reference_loudness(self, progress=None):
         """Median integrated loudness of the original songs (cached per image)."""
-        st = os.stat(self.path)
+        st = os.stat(span(self.img, RWS_FILES[0])[0] if self.is_folder else self.path)
         key = "%s|%d|%d" % (os.path.basename(self.path), st.st_size, int(st.st_mtime))
         cache = os.path.join(CACHE_DIR, "loudness.json")
         try:
@@ -270,6 +293,8 @@ class Disc:
         unlock_off: let the Song Manager switch every song OFF (the game normally refuses OFF for songs not
         heard to the end yet). With an unchanged song list only the executable changes."""
         prog = progress or (lambda f, m: None)
+        if self.is_folder:
+            raise ValueError("a HostFS folder is saved into itself (build_folder), not as a new ISO")
         if os.path.abspath(out_path) == os.path.abspath(self.path):
             raise ValueError("the output must be a new file (the source ISO is never modified)")
         reps, report = self.replacements(items, normalize, prog, unlock_off)
@@ -328,8 +353,8 @@ class Disc:
                 s = self.songs[it.src]
                 hdr = self.headers[s.rws_index]
                 seg = hdr.segments[s.segment]
-                e = self.img.entries[RWS_FILES[s.rws_index]]
-                src = (self.path, e.lsn * iso.SECTOR + hdr.segment_file_offset(seg), seg.size)
+                host, base = span(self.img, RWS_FILES[s.rws_index])
+                src = (host, base + hdr.segment_file_offset(seg), seg.size)
                 uid = seg.uuid if s.original or seg.uuid.startswith(MARK) else MARK + seg.uuid[8:]
                 segs.append((src, seg.size, seg.usable, uid, seg.info))
         # 2. stream files (a file whose songs did not change is kept as it is)
@@ -396,7 +421,9 @@ class Disc:
 
     def size_plan(self, items, unlock_off=False, estimate=None):
         """Projected output image for the song list `items` without encoding anything:
-        {"bytes", "sectors", "fits" (single-layer DVD), "room_bytes", "text"}."""
+        {"bytes", "sectors", "fits" (single-layer DVD), "room_bytes", "text"}. None for a HostFS folder."""
+        if self.is_folder:
+            return None
         if self.is_unchanged(items) and not (unlock_off and not self.unlocked):
             sectors = self.img.volume_sectors
         else:
@@ -406,6 +433,83 @@ class Disc:
         room = DVD5_SECTORS * iso.SECTOR - size
         return {"bytes": size, "sectors": sectors, "fits": room >= 0, "room_bytes": max(room, 0),
                 "text": capacity_text(size, max(room, 0))}
+
+    # ------------------------------------------------------------------ HostFS folder
+    def check_folder(self, folder):
+        """Why `folder` cannot receive this disc (None if it can): a game folder of another game / version, a
+        folder with other files, or (for a folder opened as the source) any other folder than itself."""
+        folder = os.path.abspath(folder)
+        if self.is_folder:
+            if os.path.normcase(folder) != os.path.normcase(os.path.abspath(self.path)):
+                return "an opened folder is saved into itself (to fill another folder, open your ISO)"
+            return None
+        if os.path.isfile(folder):
+            return "this is a file - choose a folder"
+        if os.path.isdir(folder) and os.listdir(folder):
+            if not hostfs.is_game_folder(folder):
+                return "this folder has other files: choose an empty folder or a folder with the game's files"
+            try:
+                img = hostfs.FolderImage(folder)
+                elf = hostfs.boot_elf(img.read_file("/SYSTEM.CNF"))
+                if elf != self.elf_path:
+                    return "this folder has another game or version (%s, not %s)" % (
+                        (elf or "?").strip("/"), self.elf_path.strip("/"))
+                if elf in img.entries and elfpatch.crc(img.read_file(elf)) != self.crc:
+                    return "the game executable in this folder was changed by another tool (other PCSX2 CRC)"
+            except Exception as exc:
+                return "cannot read this folder: %s" % exc
+        return None
+
+    def folder_plan(self, folder):
+        """{"extract_bytes": bytes still to copy from the ISO into `folder`, "has_game": it has the game already}."""
+        folder = os.path.abspath(folder)
+        if self.is_folder:
+            return {"extract_bytes": 0, "has_game": True}
+        if not os.path.isdir(folder):
+            return {"extract_bytes": sum(e.size for e in self.img.entries.values()), "has_game": False}
+        return {"extract_bytes": hostfs.needed_bytes(self.img, folder), "has_game": hostfs.is_game_folder(folder)}
+
+    def build_folder(self, items, folder, normalize=True, progress=None, unlock_off=False):
+        """Save the song list `items` into the HostFS game folder `folder` (see hostfs.py). From an ISO the game's
+        files are extracted first (missing files only), then the changed files are written and the boot image
+        "<game> (HostFS).iso" is rebuilt; every file MusicKit manages ends up exactly as in a new ISO built from
+        the same source. A folder opened as the source is saved into itself. Returns a report dict."""
+        prog = progress or (lambda f, m: None)
+        folder = os.path.abspath(folder)
+        problem = self.check_folder(folder)
+        if problem:
+            raise ValueError(problem)
+        boot = hostfs.boot_iso_path(folder, GAME)
+        if os.path.isdir(folder):          # refuse before encoding when the game is running
+            fimg = hostfs.FolderImage(folder) if hostfs.is_game_folder(folder) else None
+            hostfs.check_unlocked([boot] + [hostfs.host_path(folder, p, fimg) for p in sorted(self.changed_paths)])
+        reps, report = self.replacements(items, normalize, lambda f, m: prog(0.6 * f, m), unlock_off)
+        if not self.is_folder:
+            hostfs.extract(self.img, folder, lambda f, m: prog(0.6 + 0.25 * f, m), skip=reps)
+            # files MusicKit manages that this song list leaves unchanged: as on the source ISO
+            fimg = hostfs.FolderImage(folder)
+            for p in sorted(self.changed_paths):
+                if p in reps:
+                    continue
+                e, fe = self.img.entries[p], fimg.entries[p]
+                if fe.size != e.size or not hostfs.same_file(self.path, e.lsn * iso.SECTOR, fe.host, 0, e.size):
+                    reps[p] = (self.path, e.lsn * iso.SECTOR, e.size)
+        written = hostfs.write_files(folder, reps, lambda f, m: prog(0.85 + 0.13 * f, m), extra_locked=[boot])
+        prog(0.99, "writing the boot image")
+        report["boot_iso"] = hostfs.write_boot_iso(folder, GAME)
+        report["folder"] = folder
+        report["written"] = sorted(written)
+        prog(1.0, "done")
+        return report
+
+    def hostfs_steps(self, folder=None):
+        """How to play the folder in PCSX2 (numbered steps)."""
+        return hostfs.instructions(GAME, NAHELAM_DIR, self.elf_path, self.crc, folder)
+
+    def close(self):
+        f = getattr(self.img, "f", None)
+        if f:
+            f.close()
 
     def _boot_elf(self):
         try:
