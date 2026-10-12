@@ -456,6 +456,9 @@ class Disc:
                         (elf or "?").strip("/"), self.elf_path.strip("/"))
                 if elf in img.entries and elfpatch.crc(img.read_file(elf)) != self.crc:
                     return "the game executable in this folder was changed by another tool (other PCSX2 CRC)"
+                if elf in img.entries and b"CHAINKIT" in img.read_file(elf) and b"CHAINKIT" not in self.elf:
+                    return ("this folder has the Burnout Chain mod (ChainKit): saving your ISO into it would remove "
+                            "the mod - choose another folder")
             except Exception as exc:
                 return "cannot read this folder: %s" % exc
         return None

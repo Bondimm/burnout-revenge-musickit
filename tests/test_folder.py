@@ -6,6 +6,7 @@ extracts the whole disc (~4 GB per ISO, one at a time) and runs only with MUSICK
 import hashlib
 import os
 import shutil
+import struct
 import sys
 import time
 
@@ -128,6 +129,10 @@ def test_folder_checks_and_locks(tmp_path):
         with open(core.span(f.img, f.elf_path)[0], "wb") as out:
             out.write(bytes(bad.d))
         assert "CRC" in d.check_folder(folder)
+        with open(core.span(f.img, f.elf_path)[0], "wb") as out:
+            x = struct.unpack("<2I", b"CHAINKIT")       # the Burnout Chain mod (ChainKit) is in this folder;
+            out.write(d.elf + b"CHAINKIT" + struct.pack("<I", x[0] ^ x[1]))   # (same PCSX2 CRC)
+        assert "ChainKit" in d.check_folder(folder)
         with open(core.span(f.img, f.elf_path)[0], "wb") as out:
             out.write(d.elf)
         if os.name == "nt":                            # a running game keeps its files open: refused, nothing written
