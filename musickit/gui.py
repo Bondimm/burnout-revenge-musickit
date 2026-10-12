@@ -5,7 +5,7 @@ Launch: MusicKit.bat (Windows) / MusicKit.command (macOS) in the project root (o
 Same GLFW + OpenGL 3.3 + Dear ImGui stack as the other kits. Long operations run on a worker thread; messages go to the
 log panel and gui.log in the settings folder (app_dir: %APPDATA%\\musickit on Windows,
 ~/Library/Application Support/musickit on macOS, ~/.config/musickit on Linux).
-The source ISO is only read; the result is always a new file.
+The source ISO is only read; the result is a new ISO or a game folder for PCSX2's Host Filesystem (hostfs.py).
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from OpenGL import GL as gl
 from imgui_bundle import imgui
 from imgui_bundle.python_backends.glfw_backend import GlfwRenderer
 
-from . import audio, core
+from . import audio, core, hostfs
 
 TITLE = "MusicKit - Burnout Revenge EA Trax"
 RED = (1.0, 0.45, 0.45, 1.0)
@@ -152,6 +152,11 @@ class MusicKitGui:
         self.settings = settings
         self.iso_path = settings.get("iso") or core.DEFAULT_ISO
         self.out_path = settings.get("out") or ""
+        self.output_type = settings.get("output_type") if settings.get("output_type") in ("iso", "folder") else "iso"
+        self.folder_path = settings.get("folder") or ""
+        self._folder_key = None
+        self._folder_info = None
+        self.folder_gen = 0    # bumped when a folder changed on disk (after saving), so its info is read again
         self.disc = None
         self.disc_error = None
         self.items = []        # the new song list: core.SongRef (song of the disc) or Pending (new song)
@@ -181,6 +186,7 @@ class MusicKitGui:
     # ------------------------------------------------------------------ state
     def save_settings(self):
         self.settings.update({"iso": self.iso_path, "out": self.out_path, "normalize": self.normalize,
+                              "output_type": self.output_type, "folder": self.folder_path,
                               "unlock_off": self.unlock_off,
                               "queue": [p.song.to_json() for p in self.new_items()],
                               "list": [_item(it).to_json() for it in self.items] if self.disc else None,
@@ -211,14 +217,46 @@ class MusicKitGui:
         """Song list changed, or the switch-off unlock alone."""
         return self.changed() or self.unlock_pending()
 
+    def to_folder(self):
+        """Saving into a HostFS game folder (chosen in step 3, or the folder opened in step 1)."""
+        return self.output_type == "folder" or (self.disc is not None and self.disc.is_folder)
+
+    def folder_info(self):
+        """{"problem", "plan", "case_sensitive"} of the output folder (cached; read again after a save)."""
+        if self.disc is None or not self.folder_path.strip():
+            return None
+        key = (id(self.disc), os.path.abspath(self.folder_path), self.folder_gen)
+        if self._folder_key != key:
+            self._folder_key = key
+            info = {"problem": None, "plan": None, "case_sensitive": False}
+            try:
+                info["problem"] = self.disc.check_folder(self.folder_path)
+                if not info["problem"]:
+                    info["plan"] = self.disc.folder_plan(self.folder_path)
+                probe = os.path.abspath(self.folder_path)
+                while not os.path.isdir(probe) and os.path.dirname(probe) != probe:
+                    probe = os.path.dirname(probe)
+                info["case_sensitive"] = os.path.isdir(probe) and hostfs.case_sensitive(probe)
+            except Exception as exc:
+                info["problem"] = str(exc)
+            self._folder_info = info
+        return self._folder_info
+
     def save_problem(self):
-        """Why "Save new ISO" cannot be pressed now (None when it can)."""
+        """Why the Save button cannot be pressed now (None when it can)."""
         if self.disc is None:
             return "select the ISO first"
         if self.busy():
             return "wait until '%s' has finished" % self.job.title
         if not self.can_save():
             return "nothing to save yet: add, replace, rename, remove or move songs first"
+        if self.to_folder():
+            if not self.folder_path.strip():
+                return "choose the folder for PCSX2 HostFS"
+            info = self.folder_info()
+            if info and info["problem"]:
+                return info["problem"]
+            return None
         if not self.out_path.strip():
             return "choose where to save the new ISO"
         if os.path.abspath(self.out_path) == os.path.abspath(self.iso_path):
@@ -271,7 +309,7 @@ class MusicKitGui:
             self.disc_error = "Choose your Burnout Revenge ISO with Browse... (PAL SLES-53507 or USA SLUS-21242)"
             return
         if not os.path.exists(path):
-            self.disc_error = "ISO not found"
+            self.disc_error = "ISO not found" if path.lower().endswith(".iso") else "ISO or folder not found"
             return
 
         def run(job):
@@ -297,10 +335,15 @@ class MusicKitGui:
                 self.items = items
             else:
                 self.reset_list(keep_new=os.path.abspath(path) != self.saved_out)
-            if not self.out_path or os.path.abspath(self.out_path) == os.path.abspath(path):
-                self.out_path = core.default_output(path)
-            self.log("disc: %s - %d songs (%s)" % (os.path.basename(path), d.count,
-                                                   "already has MusicKit songs" if d.patched else "original"))
+            if d.is_folder:
+                self.folder_path = d.path
+            else:
+                if not self.out_path or os.path.abspath(self.out_path) == os.path.abspath(path):
+                    self.out_path = core.default_output(path)
+                if not self.folder_path or os.path.abspath(self.folder_path) == os.path.abspath(path):
+                    self.folder_path = core.default_folder(path)
+            self.log("%s: %s - %d songs (%s)" % ("HostFS folder" if d.is_folder else "disc", os.path.basename(path),
+                                                 d.count, "already has MusicKit songs" if d.patched else "original"))
             return d
 
         def wrapped(job):
@@ -311,6 +354,12 @@ class MusicKitGui:
                 raise
 
         self.start_job("open ISO", wrapped)
+
+    def open_saved_folder(self):
+        """Open the folder just saved in step 1, to keep editing it."""
+        if self.last_report and self.last_report.get("folder"):
+            self.saved_out = os.path.abspath(self.last_report["folder"])
+            self.load_disc(self.last_report["folder"])
 
     # ------------------------------------------------------------------ dialogs
     def open_dialog(self, dlg, cb):
@@ -334,6 +383,22 @@ class MusicKitGui:
         start = os.path.dirname(self.iso_path) if self.iso_path else ""
         self.open_dialog(pfd.open_file("Select the Burnout Revenge ISO", start, ["PS2 DVD image", "*.iso", "All files", "*"]),
                          lambda r: r and self.load_disc(r[0]))
+
+    def pick_src_folder(self):
+        from imgui_bundle import portable_file_dialogs as pfd
+        start = self.iso_path if os.path.isdir(self.iso_path or "") else os.path.dirname(self.iso_path or "")
+        self.open_dialog(pfd.select_folder("Open a game folder for PCSX2 HostFS (made by MusicKit)", start),
+                         lambda r: r and self.load_disc(r))
+
+    def pick_folder(self):
+        from imgui_bundle import portable_file_dialogs as pfd
+        start = self.folder_path if os.path.isdir(self.folder_path or "") else os.path.dirname(self.folder_path or "")
+        self.open_dialog(pfd.select_folder("Folder for PCSX2 HostFS (empty, or with this game's files)", start),
+                         lambda r: r and self.set_folder(r))
+
+    def set_folder(self, path):
+        self.folder_path = path
+        self._folder_key = None
 
     def pick_audio(self):
         from imgui_bundle import portable_file_dialogs as pfd
@@ -407,7 +472,7 @@ class MusicKitGui:
 
     def drop(self, paths):
         for p in paths:
-            if p.lower().endswith(".iso"):
+            if p.lower().endswith(".iso") or os.path.isdir(p):
                 self.load_disc(p)
             else:
                 self.set_form_file(p)
@@ -487,6 +552,8 @@ class MusicKitGui:
         w = disc.save_warning(items)
         if w:
             self.log(w)
+        if self.to_folder():
+            return self.build_folder(items, disc, unlock)
 
         def run(job):
             rep = disc.build_list(items, out, self.normalize, job.update, unlock_off=unlock)
@@ -505,6 +572,38 @@ class MusicKitGui:
             return rep
 
         self.start_job("save new ISO", run)
+
+    def _log_report(self, rep):
+        if rep["unlocked"]:
+            self.log("every song can be switched OFF in the Song Manager")
+        if "target_lufs" in rep:
+            self.log("loudness target %.1f LUFS (median of the original songs)" % rep["target_lufs"])
+        for s in rep["songs"]:
+            self.log("  song %d '%s'%s: %.0f s, %s -> %s LUFS" % (
+                s["index"] + 1, s["title"], " (new audio)" if s.get("replaced") else "", s["seconds"],
+                "%.1f" % s["input_lufs"] if s["input_lufs"] is not None else "-",
+                "%.1f" % s["output_lufs"] if s["output_lufs"] is not None else "-"))
+
+    def build_folder(self, items, disc, unlock):
+        folder = os.path.abspath(disc.path if disc.is_folder else self.folder_path)
+
+        def run(job):
+            rep = disc.build_folder(items, folder, self.normalize, job.update, unlock_off=unlock)
+            self._log_report(rep)
+            self.log("saved into %s (%d songs): %s" % (folder, rep["total_songs"], ", ".join(
+                p.lstrip("/") for p in rep["written"]) or "no file changed"))
+            self.log("boot image: %s" % os.path.basename(rep["boot_iso"]))
+            self.last_report = rep
+            self.folder_gen += 1
+            if disc.is_folder:          # read the folder again: its files changed
+                job.update(1.0, "reading the folder again")
+                d = core.Disc(folder)
+                self.disc = d
+                self.saved_out = folder
+                self.reset_list(keep_new=False)
+            return rep
+
+        self.start_job("save to folder", run)
 
     # ------------------------------------------------------------------ UI
     def ui(self):
@@ -544,14 +643,25 @@ class MusicKitGui:
 
     def ui_step1(self):
         self.step_header(1, "Select ISO", self.disc is not None)
-        imgui.set_next_item_width(-110)
+        imgui.set_next_item_width(-_bw("Browse...", "Folder...") - 4)
         changed, v = imgui.input_text("##iso", self.iso_path, imgui.InputTextFlags_.enter_returns_true)
         if changed:
             self.load_disc(v)
         imgui.same_line()
-        if imgui.button("Browse...##iso", imgui.ImVec2(100, 0)):
+        if imgui.button("Browse...##iso"):
             self.pick_iso()
-        if self.disc:
+        imgui.same_line()
+        if imgui.button("Folder...##isodir"):
+            self.pick_src_folder()
+        _tip("Open a game folder for PCSX2 HostFS that MusicKit made (step 3), to keep editing its songs.")
+        if self.disc and self.disc.is_folder:
+            d = self.disc
+            _text(GREEN, "HostFS folder: %s %s - %d songs" % (core.GAME, d.region, d.count))
+            if d.count > core.MAX_SONGS:
+                _text(YELLOW, "! More than %d songs: remove some before saving." % core.MAX_SONGS)
+            _text(GREY, "Saving changes only the files MusicKit manages in this folder and rebuilds \"%s\"."
+                  % (core.GAME + hostfs.BOOT_SUFFIX))
+        elif self.disc:
             d = self.disc
             n_orig = sum(1 for x in d.songs if x.original)
             _text(GREEN, "Burnout Revenge %s - %d songs on the disc%s" %
@@ -686,20 +796,35 @@ class MusicKitGui:
 
     def ui_step3(self):
         self.step_header(3, "Save", self.last_report is not None)
-        imgui.set_next_item_width(-110)
-        _, self.out_path = imgui.input_text("##out", self.out_path)
+        folder_src = self.disc is not None and self.disc.is_folder
+        imgui.begin_disabled(self.busy() or folder_src)
+        if imgui.radio_button("New ISO", not self.to_folder()):
+            self.output_type = "iso"
+        _tip("Writes a new disc image with your songs: PCSX2 or a real PS2. Your ISO is never changed.")
         imgui.same_line()
-        if imgui.button("Browse...##out", imgui.ImVec2(100, 0)):
-            self.pick_out()
-        same = self.out_path and os.path.abspath(self.out_path) == os.path.abspath(self.iso_path)
-        if same:
-            _text(RED, "The output must be a new file (the source ISO is never overwritten).")
-        elif self.out_path and os.path.exists(self.out_path):
-            _text(YELLOW, "This file exists and will be replaced.")
+        if imgui.radio_button("Folder for PCSX2 HostFS", self.to_folder()):
+            self.output_type = "folder"
+        _tip("Writes the game's files into a folder instead (extracted once from your ISO) - PCSX2's Host Filesystem\n"
+             "loads them from there. Later saves only rewrite the files MusicKit changes: no new ISO each time.\n"
+             "PCSX2 only, needs Nahelam's HostFS cheat (see the steps after saving).")
+        imgui.end_disabled()
+        if self.to_folder():
+            self.ui_folder()
+        else:
+            imgui.set_next_item_width(-_bw("Browse...") - 4)
+            _, self.out_path = imgui.input_text("##out", self.out_path)
+            imgui.same_line()
+            if imgui.button("Browse...##out"):
+                self.pick_out()
+            same = self.out_path and os.path.abspath(self.out_path) == os.path.abspath(self.iso_path)
+            if same:
+                _text(RED, "The output must be a new file (the source ISO is never overwritten).")
+            elif self.out_path and os.path.exists(self.out_path):
+                _text(YELLOW, "This file exists and will be replaced.")
         problem = self.save_problem()
         imgui.begin_disabled(problem is not None)
         imgui.push_style_color(imgui.Col_.button, _col((0.75, 0.42, 0.08, 1.0)))
-        if imgui.button("Save new ISO", imgui.ImVec2(200, 36)):
+        if imgui.button("Save to folder" if self.to_folder() else "Save new ISO", imgui.ImVec2(200, 36)):
             self.build()
         imgui.pop_style_color()
         imgui.end_disabled()
@@ -717,15 +842,69 @@ class MusicKitGui:
                 _text(YELLOW, "! " + w)
         elif self.unlock_pending():
             _text(GREY, "Song list unchanged: only \"Allow switching any song OFF\" will be applied.")
-        if size:
+        if self.to_folder():
+            pass
+        elif size:
             _text(GREY if size["fits"] else YELLOW, ("" if size["fits"] else "! ") + size["text"])
-        if self.job and (not self.job.done or self.job.title == "save new ISO"):
+        if self.job and (not self.job.done or self.job.title in ("save new ISO", "save to folder")):
             imgui.progress_bar(self.job.progress if not self.job.done else 1.0, imgui.ImVec2(-1, 0),
                                self.job.message if not self.job.done else ("done" if self.job.ok else "failed"))
-        if self.last_report:
+        if self.last_report and self.last_report.get("folder"):
+            rep = self.last_report
+            _text(GREEN, "Saved into %s - %d songs." % (rep["folder"], rep["total_songs"]))
+            if not (self.disc and self.disc.is_folder and
+                    os.path.normcase(os.path.abspath(self.disc.path)) == os.path.normcase(rep["folder"])):
+                if imgui.button("Open this folder here (to keep editing it)"):
+                    self.open_saved_folder()
+            self.ui_hostfs_steps(rep["folder"])
+        elif self.last_report:
             _text(GREEN, "Saved %s - %d songs. Burn it or load it in an emulator; "
                   "the new songs are in Driver Details > EA Trax." %
                   (os.path.basename(self.out_path), self.last_report["total_songs"]))
+
+    def ui_folder(self):
+        folder_src = self.disc is not None and self.disc.is_folder
+        imgui.begin_disabled(folder_src)
+        imgui.set_next_item_width(-_bw("Browse...") - 4)
+        changed, v = imgui.input_text("##folder", self.disc.path if folder_src else self.folder_path)
+        if changed and not folder_src:
+            self.set_folder(v)
+        imgui.same_line()
+        if imgui.button("Browse...##folder"):
+            self.pick_folder()
+        imgui.end_disabled()
+        info = self.folder_info()
+        if info is None:
+            _text(GREY, "Choose an empty folder: MusicKit copies the game's files from your ISO into it once.")
+            return
+        if info["problem"]:
+            _text(RED, info["problem"][0].upper() + info["problem"][1:] + ".")
+        elif info["plan"]:
+            plan = info["plan"]
+            if plan["extract_bytes"] and not plan["has_game"]:
+                _text(GREY, "The game's files are copied from your ISO into this folder first (%.1f GB), "
+                      "then MusicKit writes its changes." % (plan["extract_bytes"] / 1e9))
+            elif plan["extract_bytes"]:
+                _text(YELLOW, "Missing game files are copied from your ISO (%.1f GB)." % (plan["extract_bytes"] / 1e9))
+            if plan["has_game"] and not folder_src:
+                _text(GREY, "This folder has the game already: MusicKit replaces only the files it manages (songs, "
+                      "names, executable) - to keep editing the songs in this folder, open it in step 1 (Folder...).")
+            _text(GREY, "No disc size limit in a folder. The boot image \"%s\" is rebuilt on every save."
+                  % (core.GAME + hostfs.BOOT_SUFFIX))
+        if info["case_sensitive"]:
+            _text(YELLOW, "! This folder is case-sensitive: the game asks for its files in other letter case and "
+                  "will not find them. Use a case-insensitive folder (Linux: e.g. ext4 with casefold). You can "
+                  "still save and try.")
+        _text(GREY, "Stop the game in PCSX2 before you save into its folder.")
+
+    def ui_hostfs_steps(self, folder):
+        if imgui.tree_node_ex("How to play it in PCSX2##hostfs", imgui.TreeNodeFlags_.default_open):
+            for line in self.disc.hostfs_steps() if self.disc else []:
+                _text(GREY, line)
+            if imgui.small_button("Copy the cheats link"):
+                imgui.set_clipboard_text(hostfs.NAHELAM_URL)
+            _tip(hostfs.NAHELAM_URL)
+            imgui.tree_pop()
 
     def ui_song_list(self):
         d = self.disc
@@ -734,7 +913,7 @@ class MusicKitGui:
                 self.reset_list(keep_new=False)
                 self.save_settings()
             imgui.same_line()
-            _text(YELLOW, "Changes are applied when you save the new ISO.")
+            _text(YELLOW, "Changes are applied when you save.")
         h = imgui.get_content_region_avail().y * (0.42 if self.editing is not None else 0.62)
         tflags = imgui.TableFlags_.borders_inner_h | imgui.TableFlags_.row_bg | imgui.TableFlags_.scroll_y
         action = None

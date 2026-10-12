@@ -1,6 +1,7 @@
 """Validate a MusicKit output ISO against its source: file systems parse, untouched files are byte-identical
 and keep their LSNs, the song list/names/streams of the new image are consistent."""
 import hashlib
+import os
 import struct
 
 from . import core, iso
@@ -19,6 +20,9 @@ PNACH = {
         "Progressive Scan / MPH to KPH / extras (Nehalem)": [0x19778C, 0x1765E8, 0x1767DC, 0x210FA8, 0x2B5334],
     },
 }
+# Nahelam's PCSX2 HostFS cheats (hostfs.NAHELAM_URL): written EE addresses.
+PNACH[0x7E83CC5B]["HostFS (Nahelam)"] = [0x44D230] + list(range(0x44D6AC, 0x44D6BC, 4)) + list(range(0x38A478, 0x38A534, 4))
+PNACH[0xD224D348]["HostFS (Nahelam)"] = [0x44D0B0] + list(range(0x44D52C, 0x44D53C, 4)) + list(range(0x38A2D0, 0x38A38C, 4))
 
 
 def _hash_file(img, e):
@@ -100,6 +104,69 @@ def validate(src_path, out_path, log=print, hash_all=True):
         log("changed %-34s lsn %8d -> %8d  size %10d -> %10d" % (k, src.entries[k].lsn, out.entries[k].lsn,
                                                                  src.entries[k].size, out.entries[k].size))
     d = core.Disc(out_path)
+    ok = _check_disc(s0, d, log) and ok
+    size = out.volume_sectors * iso.SECTOR
+    log(("" if size <= core.DVD5_SECTORS * iso.SECTOR else "warning: ") + core.capacity_text(size))
+    ok = check_songs(s0, d, log) and ok
+    log("RESULT: %s" % ("OK" if ok else "FAILED"))
+    return ok
+
+
+def validate_folder(src_path, folder, log=print, hash_all=True):
+    """Check a HostFS game folder written from the ISO `src_path` (Disc.build_folder): every file of the disc is
+    there, the files MusicKit does not manage are identical to the disc, the boot image holds the folder's
+    SYSTEM.CNF and executable, and the song list is consistent."""
+    from . import hostfs
+    ok = True
+    src = iso.IsoImage(src_path)
+    s0 = core.Disc(src_path)
+    img = hostfs.FolderImage(folder)
+    same = 0
+    for k, e in src.entries.items():
+        o = img.entries.get(k)
+        if o is None:
+            log("FAIL: %s missing in the folder" % k)
+            ok = False
+            continue
+        if k in s0.changed_paths:
+            continue
+        if o.size != e.size or (hash_all and not hostfs.same_file(src_path, e.lsn * iso.SECTOR, o.host, 0, e.size)):
+            log("FAIL: %s differs from the disc" % k)
+            ok = False
+        else:
+            same += 1
+    log("files identical to the disc: %d/%d%s" % (same, len(src.entries) - len(s0.changed_paths),
+                                                    "" if hash_all else " (size only)"))
+    boot = hostfs.boot_iso_path(folder, core.GAME)
+    if not os.path.isfile(boot):
+        log("FAIL: boot image %s missing" % os.path.basename(boot))
+        ok = False
+    else:
+        b = iso.IsoImage(boot)
+        try:
+            for p in ("/SYSTEM.CNF", s0.elf_path):
+                if b.read_file(p) != img.read_file(p):
+                    log("FAIL: %s in the boot image differs from the folder" % p)
+                    ok = False
+        finally:
+            b.f.close()
+        log("boot image: %s (%d KB)" % (os.path.basename(boot), os.path.getsize(boot) // 1024))
+    for name in os.listdir(folder):
+        if name.endswith(hostfs.TMP_SUFFIX):
+            log("FAIL: left-over temporary file %s" % name)
+            ok = False
+    d = core.Disc(folder)
+    ok = _check_disc(s0, d, log) and ok
+    ok = check_songs(s0, d, log) and ok
+    src.f.close()
+    s0.close()
+    log("RESULT: %s" % ("OK" if ok else "FAILED"))
+    return ok
+
+
+def _check_disc(s0, d, log):
+    """Version, song count, unlock, PCSX2 CRC and the known PCSX2 patches of output `d` made from `s0`."""
+    ok = True
     log("version: %s" % d.region)
     log("songs: %d -> %d" % (s0.count, d.count))
     log("switch any song OFF: %s" % ("yes" if d.unlocked else "no (original behaviour)"))
@@ -114,10 +181,6 @@ def validate(src_path, out_path, log=print, hash_all=True):
         if clash:
             ok = False
     log("note: the modified disc can never match the redump MD5 (expected for any modified image)")
-    size = out.volume_sectors * iso.SECTOR
-    log(("" if size <= core.DVD5_SECTORS * iso.SECTOR else "warning: ") + core.capacity_text(size))
-    ok = check_songs(s0, d, log) and ok
-    log("RESULT: %s" % ("OK" if ok else "FAILED"))
     return ok
 
 
