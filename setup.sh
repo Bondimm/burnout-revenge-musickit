@@ -4,6 +4,7 @@
 # Safe to run again (repairs or updates the environment).
 # MUSICKIT_NO_PAUSE=1 (or CI=true) skips the final "Press Enter" prompt; MUSICKIT_FFMPEG_DOWNLOAD=1 downloads
 # ffmpeg even when one is installed already.
+# MUSICKIT_PRIVATE_PYTHON=1 skips the installed Pythons and uses a private one (downloaded into ./.python).
 
 cd "$(dirname "$0")" || exit 1
 HERE="$(pwd)"
@@ -22,61 +23,177 @@ fail() {
     finish 1
 }
 
-py_ok() {  # python >= 3.11?
-    "$1" -c "import sys; sys.exit(sys.version_info[:2] < (3, 11))" >/dev/null 2>&1
+# ---------------------------------------------------------------- Python environment
+# Any installed 64-bit Python 3.12 or newer works: setup uses one for which every package is available ready-made
+# (nothing is compiled). When there is none, or no Python at all, it downloads a private Python into ./.python with
+# uv (https://astral.sh/uv): no admin rights needed, nothing outside this folder changes.
+PRIVATE_PY="3.13"     # a version with ready-made packages on every supported system
+UV_VERSION="0.12.24"
+TRIED=" "
+FORCE=""
+
+py_version() {  # prints e.g. "3.13" when "$1" is a usable 64-bit Python 3.11+
+    "$1" -c "import sys; ok = sys.version_info >= (3, 11) and sys.maxsize > 2**32; print(*sys.version_info[:2], sep='.') if ok else sys.exit(1)" 2>/dev/null
 }
 
-find_python() {
-    local cand path
-    for cand in python3 python3.14 python3.13 python3.12 python3.11 python; do
-        path="$(command -v "$cand" 2>/dev/null)" || continue
-        if py_ok "$path"; then
-            echo "$path"
-            return 0
-        fi
+# install_packages: ready-made packages only (never compiles). A quiet check first whether every package has a
+# download for this Python, so an unsupported Python is skipped fast and without a wall of errors.
+install_packages() {
+    .venv/bin/python -m pip install --upgrade pip >/dev/null 2>&1
+    if ! .venv/bin/python -m pip install --dry-run --quiet --only-binary=:all: -r requirements.txt >/dev/null 2>&1; then
+        [ -n "$FORCE" ] || return 2
+    fi
+    .venv/bin/python -m pip install --only-binary=:all: -r requirements.txt
+}
+
+try_python() {  # try_python <python>: builds .venv with it; fails when that Python cannot be used
+    local ver
+    [ -e ".venv/bin/python" ] && return 0
+    ver="$(py_version "$1")" && [ -n "$ver" ] || return 1
+    if [ -z "$FORCE" ]; then
+        case "$TRIED" in *" $ver "*) return 1 ;; esac
+    fi
+    echo
+    echo "Using Python $ver ($1)..."
+    rm -rf ".venv"
+    if ! "$1" -m venv ".venv" >/dev/null 2>&1 || [ ! -e ".venv/bin/python" ]; then
+        rm -rf ".venv"
+        echo "  Could not create a Python environment with it - trying another Python..."
+        echo "  (On Debian / Ubuntu / Mint the venv module is a separate package: python3-venv.)"
+        return 1
+    fi
+    echo "Installing Python packages..."
+    install_packages && return 0
+    TRIED="$TRIED$ver "
+    rm -rf ".venv"
+    echo "  Not all packages are available ready-made for Python $ver (or there is no internet connection)."
+    echo "  Trying another Python..."
+    return 1
+}
+
+try_existing_private() {  # a private Python downloaded by an earlier run
+    local py rc
+    [ -e ".venv/bin/python" ] && return 0
+    for py in .python/cpython-"$PRIVATE_PY".*/bin/python3; do
+        [ -x "$py" ] || continue
+        FORCE=1
+        try_python "$py"
+        rc=$?
+        FORCE=""
+        return $rc
     done
     return 1
 }
 
-install_hint() {
-    echo "  Debian / Ubuntu / Mint:  sudo apt install python3 python3-venv python3-pip"
-    echo "  Fedora / RHEL:           sudo dnf install python3 python3-pip"
-    echo "  Arch / Manjaro:          sudo pacman -S python python-pip"
-    echo "  openSUSE:                sudo zypper install python3 python3-pip"
+download() {  # download <url> <file>
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --retry 3 --connect-timeout 20 -sS -o "$2" "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O "$2" "$1"
+    else
+        echo "  neither curl nor wget is installed"
+        return 1
+    fi
 }
 
-# ---------------------------------------------------------------- Python environment
-if [ -e ".venv/bin/python" ] && ! py_ok ".venv/bin/python"; then
-    echo "The existing .venv does not work with Python 3.11+ - creating it again..."
-    rm -rf ".venv"
-fi
-if [ ! -e ".venv/bin/python" ]; then
-    PY="$(find_python)" || {
-        echo "Python 3.11 or newer is required."
-        command -v python3 >/dev/null 2>&1 && python3 --version
-        echo "Install it with your package manager, then run ./setup.sh again:"
-        install_hint
-        echo "(Older distributions: use the deadsnakes PPA on Ubuntu, or https://www.python.org/downloads/)"
-        finish 1
-    }
-    echo "Creating Python environment with $PY ($("$PY" --version 2>&1))..."
-    rm -rf ".venv"
-    if ! "$PY" -m venv ".venv" || [ ! -e ".venv/bin/python" ]; then
-        rm -rf ".venv"
-        echo
-        echo "Could not create the Python environment in \"$HERE/.venv\"."
-        echo "On Debian / Ubuntu / Mint the venv module is a separate package:"
-        echo "  sudo apt install python3-venv     (for another version: python3.12-venv, ...)"
-        echo "Then run ./setup.sh again."
-        finish 1
+sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d ' ' -f 1
+}
+
+private_python() {
+    local os arch target sum tmp uv
+    echo
+    echo "No installed Python can be used, so setup downloads a private Python $PRIVATE_PY into the .python folder"
+    echo "here (about 100 MB; no admin rights needed, nothing outside this folder changes)."
+    case "$(uname -s)" in
+        Darwin) os="apple-darwin" ;;
+        Linux) os="unknown-linux-gnu" ;;
+        *) echo "  There is no private Python for $(uname -s)."; return 1 ;;
+    esac
+    case "$(uname -m)" in
+        x86_64 | amd64) arch="x86_64" ;;
+        aarch64 | arm64) arch="aarch64" ;;
+        *) echo "  There is no private Python for $(uname -m)."; return 1 ;;
+    esac
+    if [ "$os" = "apple-darwin" ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+        arch="aarch64"  # Apple Silicon, also when this Terminal runs under Rosetta
+    fi
+    target="$arch-$os"
+    case "$target" in
+        x86_64-unknown-linux-gnu) sum="b4dfaef47d491a7296981f8374a4595f55dbf84e8937c8ecd2983574d8bb3da6" ;;
+        aarch64-unknown-linux-gnu) sum="5231be65f496304623895dacdbf1de8504fec90303684bdf05805aa34414dd21" ;;
+        x86_64-apple-darwin) sum="4fa82e37cb94767661f532b001e470b67a186c7260e305bd84ddb78fd545c0b6" ;;
+        aarch64-apple-darwin) sum="0c4346de7abdb49495b393b9ec809fe387aa43e586be20fecb972216c1e71732" ;;
+        *) echo "  There is no private Python for $target."; return 1 ;;
+    esac
+    if [ ! -x ".python/uv/uv" ]; then
+        echo "Downloading uv $UV_VERSION (the Python installer from astral.sh)..."
+        tmp="$(mktemp -d "${TMPDIR:-/tmp}/kit-uv.XXXXXX")" || return 1
+        if ! download "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$target.tar.gz" "$tmp/uv.tar.gz"; then
+            echo "  Could not download uv."
+            rm -rf "$tmp"
+            return 1
+        fi
+        if [ "$(sha256 "$tmp/uv.tar.gz")" != "$sum" ]; then
+            echo "  The uv download is damaged (wrong checksum)."
+            rm -rf "$tmp"
+            return 1
+        fi
+        tar -xzf "$tmp/uv.tar.gz" -C "$tmp" && uv="$(find "$tmp" -type f -name uv | head -n 1)" && [ -n "$uv" ] &&
+            mkdir -p ".python/uv" && cp -f "$uv" ".python/uv/uv" && chmod +x ".python/uv/uv" || {
+            echo "  Could not unpack uv."
+            rm -rf "$tmp"
+            return 1
+        }
+        rm -rf "$tmp"
+    fi
+    echo "Downloading Python $PRIVATE_PY..."
+    if ! UV_PYTHON_INSTALL_DIR="$HERE/.python" UV_CACHE_DIR="$HERE/.python/cache" UV_NO_CONFIG=1 \
+        .python/uv/uv python install "$PRIVATE_PY" --no-bin; then
+        echo "  Could not download Python $PRIVATE_PY."
+        return 1
+    fi
+    rm -rf ".python/cache"
+    try_existing_private
+}
+
+VENV_OK=""
+if [ -e ".venv/bin/python" ]; then
+    ver="$(py_version ".venv/bin/python")"
+    if [ -n "$ver" ]; then
+        echo "Updating the Python packages (Python $ver)..."
+        if install_packages; then
+            VENV_OK=1
+        else
+            TRIED=" $ver "
+        fi
+    fi
+    if [ -z "$VENV_OK" ]; then
+        echo "The existing Python environment (.venv) cannot be used - setting up a new one..."
+        rm -rf ".venv-old"
+        mv ".venv" ".venv-old" 2>/dev/null || rm -rf ".venv"
     fi
 fi
-echo "Installing Python packages..."
-.venv/bin/python -m pip install --upgrade pip >/dev/null 2>&1
-.venv/bin/python -m pip install --prefer-binary -r requirements.txt ||
-    fail "Installing the Python packages failed - see the messages above.
+if [ -z "$VENV_OK" ]; then
+    rm -rf ".venv"
+    try_existing_private
+    if [ "${MUSICKIT_PRIVATE_PYTHON:-}" != "1" ]; then
+        for cand in python3 python python3.13 python3.12 python3.14 python3.15 python3.16 python3.17 python3.11; do
+            [ -e ".venv/bin/python" ] && break
+            path="$(command -v "$cand" 2>/dev/null)" || continue
+            try_python "$path"
+        done
+    fi
+    [ -e ".venv/bin/python" ] || private_python
+    if [ ! -e ".venv/bin/python" ]; then
+        rm -rf ".venv"
+        [ -e ".venv-old/bin/python" ] && mv ".venv-old" ".venv"
+        fail "Setting up Python failed - see the messages above.
 Check the internet connection, then run ./setup.sh again.
 (Only 64-bit Linux on x86_64 or aarch64 with glibc 2.28+ is supported; Alpine / musl is not.)"
+    fi
+fi
+rm -rf ".venv-old"
 
 # ---------------------------------------------------------------- ffmpeg
 runs() {  # the tool starts and prints its version

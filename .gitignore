@@ -15,3 +15,5 @@ __pycache__/
 *.wma
 !tests/data/*
 cache/
+.python/
+.venv-old/
