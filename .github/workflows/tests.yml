@@ -141,10 +141,10 @@ jobs:
     env:
       MUSICKIT_NO_PAUSE: "1"
     steps:
-      - name: Basic tools only (no Python)
+      - name: Basic tools and the OpenGL libraries only (no Python)
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git xz-utils file
+          apt-get install -y --no-install-recommends ca-certificates curl git xz-utils file libgl1 libegl1 libxkbcommon0
           if command -v python3 || command -v python; then echo "Python is installed"; exit 1; fi
 
       - uses: actions/checkout@v5

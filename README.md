@@ -98,7 +98,7 @@ you want and save your game.
 | What | Details |
 |---|---|
 | Operating system | Windows 10 or 11 (64-bit), macOS 14 Sonoma or newer (Apple Silicon or Intel), or 64-bit Linux (x86_64 or aarch64, glibc 2.28+; tested on Ubuntu 22.04 / 24.04) |
-| Python | 3.11 or newer — <https://www.python.org/downloads/> |
+| Python | any Python 3.12 or newer, or none at all — the setup picks an installed Python for which every package is available ready-made, or downloads a private Python 3.13 into the `.python` folder (no admin rights needed, about 100 MB) |
 | Python packages | installed automatically by `setup.bat` / `setup.command` / `setup.sh` into a private `.venv`: numpy, numba, glfw, PyOpenGL, imgui-bundle, Pillow, soundfile, pyloudnorm, pycdlib, pytest (see [requirements.txt](requirements.txt)) |
 | ffmpeg | downloaded automatically by `setup.bat` / `setup.command` / `setup.sh` (or install it yourself: Windows `winget install Gyan.FFmpeg`, macOS `brew install ffmpeg`, Linux your package manager, e.g. `sudo apt install ffmpeg`) |
 | Graphics | any GPU with OpenGL 3.3 (for the MusicKit window) |
@@ -108,7 +108,9 @@ you want and save your game.
 
 ## Installation (Windows 10 / 11)
 
-1. Install **Python 3.11 or newer** from <https://www.python.org/downloads/> (tick *"Add python.exe to PATH"*).
+1. Optional: install **Python 3.12 or newer** from <https://www.python.org/downloads/> (tick *"Add python.exe to PATH"*).
+   Without it, or when your Python is too new for some packages (e.g. a fresh 3.15), `setup.bat` downloads a
+   private Python into the `.python` folder by itself.
 2. Download this repository (green **Code** button → *Download ZIP*) and unpack it, or `git clone` it.
 3. Double-click **`setup.bat`** once. It creates a private Python environment in `.venv` and downloads
    **ffmpeg** into the `ffmpeg` folder (used to read MP3/FLAC/OGG/… files). Nothing is installed system-wide.
@@ -120,8 +122,9 @@ you want and save your game.
 
 For Apple Silicon (M1 and newer) and Intel Macs with macOS 14 Sonoma or newer.
 
-1. Install **Python 3.11 or newer** from <https://www.python.org/downloads/macos/> (or with
-   [Homebrew](https://brew.sh): `brew install python`).
+1. Optional: install **Python 3.12 or newer** from <https://www.python.org/downloads/macos/> (or with
+   [Homebrew](https://brew.sh): `brew install python`). Without it, or when your Python is too new for some
+   packages, `setup.command` downloads a private Python into the `.python` folder by itself.
 2. Download this repository (green **Code** button → *Download ZIP*) and unpack it, or `git clone` it.
 3. Double-click **`setup.command`** once. It opens a Terminal window, creates a private Python environment in
    `.venv` and downloads **ffmpeg** into the `ffmpeg` folder (an ffmpeg installed with Homebrew is used instead
@@ -144,11 +147,13 @@ For Apple Silicon (M1 and newer) and Intel Macs with macOS 14 Sonoma or newer.
 For 64-bit Linux on x86_64 or aarch64 (glibc 2.28 or newer; Alpine / musl is not supported). Tested in CI on
 Ubuntu 22.04 and 24.04 (x86_64); other distributions (Debian, Fedora, Arch, openSUSE, Mint, ...) should work the same way.
 
-1. Install the system packages. Python 3.11 or newer, and on Debian / Ubuntu the separate `venv` package:
+1. Install the system packages. Python is optional: `./setup.sh` uses an installed Python 3.12 or newer (on
+   Debian / Ubuntu with its separate `venv` package) and otherwise downloads a private Python into the `.python`
+   folder by itself:
    - Debian / Ubuntu / Mint: `sudo apt install python3 python3-venv python3-pip libgl1 libegl1 libxkbcommon0 zenity`
    - Fedora: `sudo dnf install python3 python3-pip mesa-libGL mesa-libEGL libxkbcommon zenity`
    - Arch / Manjaro: `sudo pacman -S python python-pip mesa libglvnd libxkbcommon zenity`
-   - Ubuntu 22.04 has Python 3.10 only: add Python 3.11+ first (deadsnakes PPA, or <https://www.python.org/downloads/>).
+   - Ubuntu 22.04 has Python 3.10 only: nothing to add, `./setup.sh` downloads a private Python.
    - The window needs OpenGL 3.3 (Mesa or the GPU driver) and an X11 or Wayland session. **`zenity`** (or `kdialog`
      on KDE) is used for the file and folder dialogs; without it, the dialogs do not open. The GLFW and
      imgui-bundle wheels bring everything else. A sound player (`paplay`, `aplay` or `ffplay`) is used for previews.
