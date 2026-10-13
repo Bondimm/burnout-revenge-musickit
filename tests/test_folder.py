@@ -49,6 +49,10 @@ def _mini_folder(d, folder):
     return folder
 
 
+def _mtimes(folder):
+    return {os.path.join(r, n): os.stat(os.path.join(r, n)).st_mtime_ns for r, _, ns in os.walk(folder) for n in ns}
+
+
 def _changes(items):
     items.pop(2)                                   # remove an original song
     items.insert(0, items.pop(-1))                 # move the last song (in _EATRAX1) to the top
@@ -158,19 +162,19 @@ def test_folder_end_to_end(tmp_path):
             items = d.current_list()
             items[3].audio = FLAC
             items.append(core.NewSong(WAV, "Folder Song", "MusicKit", "HostFS"))
-            t = time.time()
             rep = d.build_folder(items, folder, unlock_off=True)
             assert validate.validate_folder(src, folder, log=quiet)
             assert len(rep["written"]) == len(d.changed_paths)
-            first = time.time() - t
             f = core.Disc(folder)
             assert f.count == d.count + 1 and f.songs[-1].title == "Folder Song" and f.unlocked
             items = f.current_list()
             items[0].title = "Edited In Folder"
             items.append(core.NewSong(FLAC, "Second Song", "MusicKit", ""))
-            t = time.time()
+            before = _mtimes(folder)
             rep = f.build_folder(items, folder)
-            assert time.time() - t < first           # no extraction the second time
+            after = _mtimes(folder)
+            # no extraction the second time: only the written files and the boot image change
+            assert len([p for p, m in before.items() if after.get(p) != m]) <= len(rep["written"]) + 1
             assert validate.validate_folder(src, folder, log=quiet, hash_all=False)
             r = core.Disc(folder)
             assert r.count == d.count + 2 and r.songs[0].title == "Edited In Folder" and r.unlocked
