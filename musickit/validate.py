@@ -24,6 +24,8 @@ PNACH = {
 PNACH[0x7E83CC5B]["HostFS (Nahelam)"] = [0x44D230] + list(range(0x44D6AC, 0x44D6BC, 4)) + list(range(0x38A478, 0x38A534, 4))
 PNACH[0xD224D348]["HostFS (Nahelam)"] = [0x44D0B0] + list(range(0x44D52C, 0x44D53C, 4)) + list(range(0x38A2D0, 0x38A38C, 4))
 
+# Files MusicKit adds to a HostFS game folder that are not on the disc.
+FOLDER_FILES = ()
 # Files the Burnout Revenge ChainKit rewrites in place (same size and LSN): a different content is not an error.
 OTHER_KITS = {"/DATA/GLOBAL.TXD": "ChainKit's arrow texture"}
 
@@ -138,17 +140,12 @@ def validate_folder(src_path, folder, log=print, hash_all=True):
         if o is None:
             log("FAIL: %s missing in the folder" % k)
             ok = False
-            continue
-        if k in s0.changed_paths:
-            continue
-        if o.size != e.size or (hash_all and not hostfs.same_file(src_path, e.lsn * iso.SECTOR, o.host, 0, e.size)):
-            if o.size != e.size or not _other_kit(k, log):
-                log("FAIL: %s differs from the disc" % k)
-                ok = False
-        else:
+        elif k not in s0.changed_paths and o.size == e.size and (
+                not hash_all or hostfs.same_file(src_path, e.lsn * iso.SECTOR, o.host, 0, e.size)):
             same += 1
     log("files identical to the disc: %d/%d%s" % (same, len(src.entries) - len(s0.changed_paths),
                                                     "" if hash_all else " (size only)"))
+    folder_notes(s0, src_path, src, img, log, hash_all)
     boot = hostfs.boot_iso_path(folder, core.GAME)
     if not os.path.isfile(boot):
         log("FAIL: boot image %s missing" % os.path.basename(boot))
@@ -174,6 +171,37 @@ def validate_folder(src_path, folder, log=print, hash_all=True):
     s0.close()
     log("RESULT: %s" % ("OK" if ok else "FAILED"))
     return ok
+
+
+def folder_notes(s0, src_path, src, img, log=print, hash_all=True):
+    """Notes (never failures) about other mods in a game folder: files MusicKit does not manage that differ from
+    the disc or are not on it, and other changes in the files MusicKit manages. Returns the number of notes."""
+    from . import hostfs
+    n = 0
+    changed, added = hostfs.other_files(src_path, src, img, s0.changed_paths | set(FOLDER_FILES), hash_all)
+    if changed:
+        kits = [OTHER_KITS[k] for k in changed if k in OTHER_KITS]
+        log("note: %d file%s differ%s from the disc but MusicKit does not manage %s (another mod's files, kept as they "
+            "are%s): %s" % (len(changed), "" if len(changed) == 1 else "s", "s" if len(changed) == 1 else "",
+                            "it" if len(changed) == 1 else "them", "; " + ", ".join(kits) if kits else "",
+                            hostfs.short_list(changed)))
+        n += 1
+    if added:
+        log("note: %d file%s in the folder %s not on the disc (another mod's or your own, kept as they are): %s"
+            % (len(added), "" if len(added) == 1 else "s", "is" if len(added) == 1 else "are", hostfs.short_list(added)))
+        n += 1
+    elf = s0.elf_path
+    if elf in img.entries:
+        other = s0.foreign_elf_changes(img.read_file(elf))
+        if other:
+            who = "ChainKit's Burnout Chain mod" if b"CHAINKIT" in img.read_file(elf) else "another mod"
+            log("note: the game executable has changes MusicKit did not make (%s: %s)" % (who, other))
+            n += 1
+    texts = s0.other_texts(img)
+    if texts:
+        log("note: texts changed by another mod (kept): %s" % ", ".join(texts))
+        n += 1
+    return n
 
 
 def _check_disc(s0, d, log):

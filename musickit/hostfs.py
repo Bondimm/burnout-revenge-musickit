@@ -15,10 +15,17 @@ The game asks for its files in mixed case ("Data/Global.txd") while the disc sto
 folder must be on a case-insensitive file system (Windows, macOS by default; on Linux e.g. an ext4 folder with
 casefold enabled). This module itself finds files case-insensitively everywhere.
 
+Other mods in the same folder: a kit never touches files it does not manage (another mod's replaced or added
+files stay as they are). When a folder is opened as the source, a kit changes the files it manages on top of what
+is there (other kits' and mods' changes stay). Saving from an ISO into a folder that already has the game rewrites
+the kit's own parts from the ISO: a kit refuses when another tool changed the game executable in that folder (open
+the folder as the source instead) and keeps other mods' texts in the text files.
+
 This file is the same in every kit (MusicKit for Burnout 3 / Revenge / Dominator, ChainKit).
 """
 import hashlib
 import os
+import re
 import shutil
 import struct
 import time
@@ -59,6 +66,77 @@ def _is_tmp(name):
     return name.endswith(TMP_SUFFIX)
 
 
+_VERSION = re.compile(r";\d+$")      # "SYSTEM.CNF;1": the disc's file version number, kept by some extractors
+
+
+def versioned_message(paths):
+    return ("%d file name%s in this folder still end with the disc's version number (e.g. \"%s\"): the game asks "
+            "for \"%s\" and cannot find them. Extract the ISO again with a tool that drops the \";1\" (7-Zip does), "
+            "or rename the files, or let the kit fill an empty folder from your ISO."
+            % (len(paths), "" if len(paths) == 1 else "s", paths[0].lstrip("/"), _VERSION.sub("", paths[0]).lstrip("/")))
+
+
+def game_subfolder(folder, depth=2):
+    """A subfolder of `folder` (up to `depth` levels down) that has the game (SYSTEM.CNF), else None."""
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return None
+    for n in names:
+        p = os.path.join(folder, n)
+        if os.path.isdir(p):
+            if is_game_folder(p):
+                return p
+            if depth > 1:
+                sub = game_subfolder(p, depth - 1)
+                if sub:
+                    return sub
+    return None
+
+
+def missing_parts(img, required):
+    """What an incompletely extracted game folder lacks: ["TRACKS (12 of about 253 files)", "IOP/GTFSHOST.IRX", ...].
+    required = {"/FILE": 1 or "DIR": least number of files the disc has there}."""
+    out = []
+    for name, n in required.items():
+        if name.startswith("/"):
+            if _key(name) not in img.entries:
+                out.append(name.lstrip("/"))
+            continue
+        have = sum(1 for k in img.entries if k.startswith("/" + name.upper() + "/"))
+        if have < n:
+            out.append("%s (%d of %d+ files)" % (name, have, n) if have else "%s (missing)" % name)
+    return out          # (empty files are not a sign: some discs have them)
+
+
+def incomplete_message(missing):
+    return ("this folder looks incompletely extracted - missing: %s. Extract your ISO into it again, or open your ISO "
+            "and save into this folder (missing files are copied from the ISO)." % ", ".join(missing[:6]) +
+            (" ..." if len(missing) > 6 else ""))
+
+
+def other_boot_files(folder, game):
+    """Disc images at the top of `folder` other than the kit's boot image (e.g. the user's own ISO, as Nahelam's
+    guide sets the folder up): PCSX2 starts the game executable from the image it boots, so those images still
+    start the game without the kit's changes to the executable."""
+    if not os.path.isdir(folder):
+        return []
+    mine = os.path.basename(boot_iso_path(folder, game)).lower()
+    return sorted(n for n in os.listdir(folder) if n.lower().endswith(".iso") and n.lower() != mine
+                  and os.path.isfile(os.path.join(folder, n)))
+
+
+def boot_hint(folder, game):
+    """One line for the save report when the folder holds other disc images (None otherwise)."""
+    others = other_boot_files(folder, game)
+    if not others:
+        return None
+    return ("Start \"%s\" in PCSX2: %s in this folder still start%s the game's original executable (the files in "
+            "the folder are used either way, but the executable changes are only in \"%s\")."
+            % (game + BOOT_SUFFIX, ", ".join("\"%s\"" % n for n in others), "s" if len(others) == 1 else "",
+               game + BOOT_SUFFIX))
+
+
 class FolderImage:
     """A game folder read like iso.IsoImage: entries {"/UPPER/PATH": FolderEntry}, read_file, open_file, span.
     Disc images at the top of the folder (the boot image, or the user's own ISO) are not game files."""
@@ -71,6 +149,7 @@ class FolderImage:
             raise ValueError("folder not found: %s" % folder)
         self.path = os.path.abspath(folder)
         self.entries = {}
+        versioned, twins = [], []
         for root, dirs, files in os.walk(self.path):
             dirs.sort()
             rel = os.path.relpath(root, self.path)
@@ -79,10 +158,28 @@ class FolderImage:
                 if _is_tmp(name) or (not rel and name.lower().endswith(".iso")):
                     continue
                 path = "/" + (rel + "/" if rel else "") + name
+                if _VERSION.search(name):
+                    versioned.append(path)
                 host = os.path.join(root, name)
-                self.entries.setdefault(_key(path), FolderEntry(path, host, os.path.getsize(host)))
+                k = _key(path)
+                if k in self.entries:
+                    twins.append((self.entries[k].path, path))
+                    continue
+                self.entries[k] = FolderEntry(path, host, os.path.getsize(host))
         if "/SYSTEM.CNF" not in self.entries:
+            sub = game_subfolder(self.path)
+            if sub:
+                raise ValueError("no SYSTEM.CNF in this folder, but in its subfolder \"%s\": choose that folder (the "
+                                 "one with SYSTEM.CNF and the game's folders)" % os.path.relpath(sub, self.path))
+            if versioned and any(_VERSION.sub("", p).upper() == "/SYSTEM.CNF" for p in versioned):
+                raise ValueError(versioned_message(versioned))
             raise ValueError("no SYSTEM.CNF in this folder: not a game folder")
+        if versioned:
+            raise ValueError(versioned_message(versioned))
+        if twins:
+            raise ValueError("this folder has files whose names differ only in upper / lower case (%s): the game "
+                             "would read only one of them. Keep one copy of each file (as on the disc), then try "
+                             "again." % ", ".join("%s + %s" % (a.lstrip("/"), b.lstrip("/")) for a, b in twins[:3]))
 
     def read_file(self, path):
         with open(self.entries[_key(path)].host, "rb") as f:
@@ -109,7 +206,16 @@ def iso_span(img, path):
 
 
 def is_game_folder(folder):
-    return os.path.isdir(folder) and any(n.upper() == "SYSTEM.CNF" for n in os.listdir(folder))
+    return os.path.isdir(folder) and any(_VERSION.sub("", n.upper()) == "SYSTEM.CNF" for n in os.listdir(folder))
+
+
+def not_a_game_folder(folder):
+    """Why a folder with other files cannot receive the game (for the kits' folder checks)."""
+    sub = game_subfolder(folder)
+    if sub:
+        return ("the game's files are in the subfolder \"%s\" of this folder: choose that folder (the one with "
+                "SYSTEM.CNF)" % os.path.relpath(sub, folder))
+    return "this folder has other files: choose an empty folder or a folder with the game's files"
 
 
 def boot_elf(cnf):
@@ -158,6 +264,25 @@ def case_sensitive(folder):
             os.remove(probe)
         except OSError:
             pass
+
+
+CASE_WARNING = ("This folder is case-sensitive: the game asks for its files in other letter case (e.g. "
+                "\"Data/Global.txd\" for DATA/GLOBAL.TXD) and PCSX2 passes the names on unchanged, so the game will "
+                "not find them - renaming the files does not help. Use a case-insensitive folder: on Linux an ext4 "
+                "folder with casefold (on a file system with the casefold feature: create an empty folder, run "
+                "\"chattr +F <folder>\", then save into it), on macOS the default (case-insensitive) APFS.")
+
+
+def case_warning(folder):
+    """CASE_WARNING when `folder` (or the nearest existing folder above it, where it would be created) is
+    case-sensitive, else None."""
+    probe = os.path.abspath(folder)
+    while not os.path.isdir(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return None
+        probe = parent
+    return CASE_WARNING if case_sensitive(probe) else None
 
 
 # ------------------------------------------------------------------------------------------- writing
@@ -274,15 +399,23 @@ def check_space(folder, nbytes):
                                                                                        free / 1e9))
 
 
+def _cut_off(img, e, fe):
+    """True if the folder's file `fe` is the start of the disc file `e` only (an interrupted extraction)."""
+    if fe.size >= e.size:
+        return False
+    return fe.size == 0 or same_file(img.path, e.lsn * SECTOR, fe.host, 0, fe.size)
+
+
 def extract(img, folder, progress=None, skip=()):
     """Copy every file of the disc image `img` (iso.IsoImage) that is missing in `folder` (any case) into it.
-    Files already there are kept as they are. `skip`: disc paths not to copy (written by the caller anyway).
+    Files already there are kept as they are (another mod's files stay), except files cut off by an interrupted
+    extraction (shorter than on the disc and equal to its start). `skip`: disc paths not to copy (written by the caller anyway).
     Returns the number of files copied."""
     os.makedirs(folder, exist_ok=True)
     fimg = FolderImage(folder) if is_game_folder(folder) else None
     skip = {_key(p) for p in skip}
     todo = [(k, e) for k, e in sorted(img.entries.items(), key=lambda kv: kv[1].lsn)
-            if (fimg is None or k not in fimg.entries) and k not in skip]
+            if (fimg is None or k not in fimg.entries or _cut_off(img, e, fimg.entries[k])) and k not in skip]
     check_space(folder, sum(e.size for _, e in todo))
     total = sum(e.size for _, e in todo) or 1
     done = 0
@@ -320,6 +453,80 @@ def same_file(path_a, off_a, path_b, off_b, size):
                 return False
             left -= n
     return True
+
+
+def other_files(src_path, src_img, folder_img, managed=(), hash_all=True):
+    """Files of a game folder that another mod changed or added (the kits never touch them):
+    (changed: disc paths whose content differs from the disc image `src_img` at `src_path`, added: paths that are
+    not on the disc). `managed`: disc paths the kit writes itself (not compared). hash_all=False compares sizes
+    only."""
+    managed = {_key(p) for p in managed}
+    changed = []
+    for k, e in sorted(src_img.entries.items()):
+        o = folder_img.entries.get(k)
+        if o is None or k in managed:
+            continue
+        if o.size != e.size or (hash_all and not same_file(src_path, e.lsn * SECTOR, o.host, 0, e.size)):
+            changed.append(k)
+    added = sorted(e.path for k, e in folder_img.entries.items() if k not in src_img.entries and k not in managed)
+    return changed, added
+
+
+def short_list(paths, n=6):
+    paths = [p.lstrip("/") for p in paths]
+    return ", ".join(paths[:n]) + (" and %d more" % (len(paths) - n) if len(paths) > n else "")
+
+
+# ------------------------------------------------------------------------------------------- game executables
+def _loaded(elf):
+    """[(address, bytes)] the PS2 loads from an ELF file (the file part of every PT_LOAD segment)."""
+    phoff = struct.unpack_from("<I", elf, 0x1C)[0]
+    phnum = struct.unpack_from("<H", elf, 0x2C)[0]
+    out = []
+    for i in range(phnum):
+        p_type, off, va, _, filesz = struct.unpack_from("<5I", elf, phoff + 32 * i)
+        if p_type == 1 and filesz:
+            out.append((va, bytes(elf[off:off + filesz])))
+    return out
+
+
+def elf_changes(elf_a, elf_b, skip=()):
+    """Address ranges [(start, end)] where the programs loaded from the ELF files a and b differ, ignoring the
+    ranges `skip` [(start, end)] (the changes a kit makes itself). An address only one of them loads counts as 0 in
+    the other. Header and section table changes (not loaded) are not compared."""
+    segs = (_loaded(elf_a), _loaded(elf_b))
+    lo = min(va for s in segs for va, _ in s)
+    hi = max(va + len(d) for s in segs for va, d in s)
+    if hi - lo > (256 << 20):
+        raise ValueError("unexpected program layout")
+    mem = []
+    for s in segs:
+        m = bytearray(hi - lo)
+        for va, d in s:
+            m[va - lo:va - lo + len(d)] = d
+        for a, b in skip:
+            a, b = max(a, lo), min(b, hi)
+            if a < b:
+                m[a - lo:b - lo] = bytes(b - a)
+        mem.append(m)
+    a, b = mem
+    out = []
+    step = 4096
+    for base in range(0, hi - lo, step):
+        if a[base:base + step] == b[base:base + step]:
+            continue
+        for i in range(base, min(base + step, hi - lo)):
+            if a[i] != b[i]:
+                if out and out[-1][1] >= lo + i - 16:      # close changes count as one
+                    out[-1][1] = lo + i + 1
+                else:
+                    out.append([lo + i, lo + i + 1])
+    return [tuple(r) for r in out]
+
+
+def describe_ranges(ranges, n=3):
+    s = ", ".join("%#x" % a if b - a <= 4 else "%#x-%#x" % (a, b) for a, b in ranges[:n])
+    return "%d place%s: %s%s" % (len(ranges), "" if len(ranges) == 1 else "s", s, " ..." if len(ranges) > n else "")
 
 
 def file_sha1(path, off=0, size=None):

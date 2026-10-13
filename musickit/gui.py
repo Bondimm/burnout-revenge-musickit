@@ -592,7 +592,11 @@ class MusicKitGui:
             self._log_report(rep)
             self.log("saved into %s (%d songs): %s" % (folder, rep["total_songs"], ", ".join(
                 p.lstrip("/") for p in rep["written"]) or "no file changed"))
+            if rep.get("kept_texts"):
+                self.log("kept another mod's texts in %s" % ", ".join(rep["kept_texts"]))
             self.log("boot image: %s" % os.path.basename(rep["boot_iso"]))
+            if rep.get("boot_hint"):
+                self.log(rep["boot_hint"], "warn")
             self.last_report = rep
             self.folder_gen += 1
             if disc.is_folder:          # read the folder again: its files changed
@@ -852,6 +856,10 @@ class MusicKitGui:
         if self.last_report and self.last_report.get("folder"):
             rep = self.last_report
             _text(GREEN, "Saved into %s - %d songs." % (rep["folder"], rep["total_songs"]))
+            if rep.get("boot_hint"):
+                _text(YELLOW, "! " + rep["boot_hint"])
+            if rep.get("kept_texts"):
+                _text(GREY, "Kept another mod's texts in %s." % ", ".join(rep["kept_texts"]))
             if not (self.disc and self.disc.is_folder and
                     os.path.normcase(os.path.abspath(self.disc.path)) == os.path.normcase(rep["folder"])):
                 if imgui.button("Open this folder here (to keep editing it)"):
@@ -1029,7 +1037,7 @@ class MusicKitGui:
             with self.log.lock:
                 lines = list(self.log.lines)[-400:]
             for lv, t, line in lines:
-                _text(RED if lv == "error" else GREY, "%s  %s" % (t, line))
+                _text(RED if lv == "error" else YELLOW if lv == "warn" else GREY, "%s  %s" % (t, line))
             if imgui.get_scroll_y() >= imgui.get_scroll_max_y() - 4:
                 imgui.set_scroll_here_y(1.0)
             imgui.end_child()

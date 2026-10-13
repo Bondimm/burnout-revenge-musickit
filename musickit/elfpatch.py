@@ -195,23 +195,28 @@ class Layout:
             if len(hits) != 1:
                 raise ValueError("code signature %s found %d times (unsupported executable)" % (g, len(hits)))
             self.delta[g] = hits[0] - a
+        # playlist: MusicKit's table in the hole (mk), or the original table - also when another tool (ChainKit)
+        # opened the hole first the same way MusicKit does
+        self.mk = False
+        self.table_old = None
+        if self.patched:
+            try:
+                self.playlist = self._find_playlist(e, self.table_new)
+                self.mk = True
+            except ValueError:
+                pass
+        if not self.mk:
+            hi = e.r32(0x251E20 + self.delta["songtable_ref"]) & 0xFFFF
+            lo = e.r32(0x251E28 + self.delta["songtable_ref"]) & 0xFFFF
+            self.table_old = (hi << 16) + (lo - 0x10000 if lo & 0x8000 else lo)
+            self.playlist = self._find_playlist(e, self.table_old)
         prof_site = PAL_PROFILE_LO_SITE + self.delta["song_finished"]
         w = e.r32(prof_site)
-        if self.patched:
+        if self.mk:
             w = e.r32(0x252128 + self.delta["song_finished"])
         self.prof_lo = w & 0xFFFF
         lui = e.r32(0x252100 + self.delta["song_finished"])
         self.profile = ((lui & 0xFFFF) << 16) + (self.prof_lo - 0x10000 if self.prof_lo & 0x8000 else self.prof_lo)
-        # original table + playlist
-        if not self.patched:
-            hi = e.r32(0x251E20 + self.delta["songtable_ref"]) & 0xFFFF
-            lo = e.r32(0x251E28 + self.delta["songtable_ref"]) & 0xFFFF
-            self.table_old = (hi << 16) + (lo - 0x10000 if lo & 0x8000 else lo)
-            ptr = self.table_old
-        else:
-            self.table_old = None
-            ptr = self.table_new
-        self.playlist = self._find_playlist(e, ptr)
 
     def _find_playlist(self, e, table):
         s = self.seg1
@@ -262,6 +267,11 @@ def unlock(data):
     return _fix_crc(e.d, target_crc, appended)
 
 
+def has_song_table(data):
+    """True if MusicKit's song table is in this executable (the hole may also have been opened by ChainKit alone)."""
+    return Layout(data).mk
+
+
 def is_patched(data):
     e = Elf(data)
     ph = e.phdrs()
@@ -295,6 +305,13 @@ def set_table(data, flags):
         data = patch(data, ORIGINAL_SONGS)
     lay = Layout(data)
     e = lay.elf
+    if not lay.mk:          # another tool (ChainKit) opened the hole: MusicKit's part of it must still be free
+        for lo, size in ((lay.table_new, 12 * MAX_SONGS), (lay.shuffle, SHUFFLE_SIZE)):
+            o = e.file_offset(lo)
+            if any(e.d[o:o + size]):
+                raise ValueError("the space for the song table is used by another mod in this executable")
+        if e.r32(lay.playlist + 0x4C) != lay.table_old:
+            raise ValueError("unexpected song list in this executable")
     old = e.r32(lay.playlist + 4)
     for i in range(max(total, old, ORIGINAL_SONGS)):
         if i < total:
@@ -306,6 +323,7 @@ def set_table(data, flags):
         o = e.file_offset(lay.table_new + 12 * i)
         e.d[o:o + 12] = struct.pack("<3I", *entry)
     e.w32(lay.playlist + 4, total)
+    e.w32(lay.playlist + 0x4C, lay.table_new)
     o = e.file_offset(lay.shuffle)
     e.d[o:o + SHUFFLE_SIZE] = bytes(SHUFFLE_SIZE)       # the game fills the shuffle order list itself
     # executables patched by older MusicKit versions kept the shuffle order list in the music manager (room for
@@ -440,6 +458,18 @@ def touched_ranges(data):
         r += [(va, va + 4) for va, _, _, _ in lay.unlock_sites()]
     r += [(lay.playlist + 4, lay.playlist + 8), (lay.playlist + 0x4C, lay.playlist + 0x50),
           (lay.hole_start, lay.hole_end)]
+    return r
+
+
+def own_ranges(data):
+    """Address ranges whose bytes MusicKit itself may have changed in this executable (code patch words, unlock,
+    playlist count and table pointer, the moved song table and shuffle order list) - everything else must be as on
+    the disc. Unlike touched_ranges() the rest of the .sndata hole is not included (ChainKit uses it)."""
+    lay = Layout(data)
+    r = [(va, va + 4) for va, _, t, _ in lay.sites() if t is not None]
+    r += [(va, va + 4) for va, _, _, _ in lay.unlock_sites()]
+    r += [(lay.playlist + 4, lay.playlist + 8), (lay.playlist + 0x4C, lay.playlist + 0x50),
+          (lay.table_new, lay.table_new + 12 * _DETECT_MAX), (lay.shuffle, lay.shuffle + SHUFFLE_SIZE)]
     return r
 
 

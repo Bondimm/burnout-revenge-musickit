@@ -23,6 +23,13 @@ quiet = lambda *a: None   # noqa: E731
 needs_iso = pytest.mark.skipif(not ISOS, reason="set MUSICKIT_ISO and/or MUSICKIT_USA_ISO")
 
 
+@pytest.fixture(autouse=True)
+def _mini_folders_ok(request, monkeypatch):
+    """The quick tests use folders with only the files the kit reads: skip the check for a complete game folder."""
+    if not request.node.name.startswith(("test_folder_end_to_end", "test_gui_folder_flow")):
+        monkeypatch.setattr(core, "REQUIRED", {})
+
+
 class _Hash:
     def __init__(self):
         self.h = hashlib.sha1()
@@ -179,6 +186,26 @@ def test_folder_end_to_end(tmp_path):
             r = core.Disc(folder)
             assert r.count == d.count + 2 and r.songs[0].title == "Edited In Folder" and r.unlocked
             assert sum(not s.original for s in r.songs) == 3
+            # other mods in the folder: a replaced file, an added file, a text; a file cut off by an interrupted copy
+            img = hostfs.FolderImage(folder)
+            unmanaged = sorted((k for k in d.img.entries if k not in d.changed_paths and d.img.entries[k].size > 4096),
+                               key=lambda k: d.img.entries[k].size)
+            replaced, cut = unmanaged[0], unmanaged[1]
+            hostfs.write_files(folder, {replaced: b"replaced by another mod", "/MODS/CAR.DAT": b"added",
+                                        cut: d.img.read_file(cut)[:1000]})
+            text_path, has_mod = _text_mod(d, folder)
+            mods = {p: hostfs.file_sha1(hostfs.FolderImage(folder).entries[p].host) for p in (replaced, "/MODS/CAR.DAT")}
+            lines = []
+            assert validate.validate_folder(src, folder, log=lines.append, hash_all=True)
+            assert any(replaced.lstrip("/") in x and x.startswith("note:") for x in lines)
+            assert any("MODS/CAR.DAT" in x and x.startswith("note:") for x in lines)
+            f = core.Disc(folder)                                  # saved into itself: the mods stay
+            items = f.current_list()
+            items[2].title = "With Mods"
+            f.build_folder(items, folder)
+            img = hostfs.FolderImage(folder)
+            assert {p: hostfs.file_sha1(img.entries[p].host) for p in mods} == mods
+            assert has_mod(img.read_file(text_path))
             # from the ISO again, a rename only: the stream files go back to the ISO's
             items = d.current_list()
             items[1].title = "Only Renamed"
@@ -189,6 +216,11 @@ def test_folder_end_to_end(tmp_path):
                 e = d.img.entries[p]
                 assert hostfs.same_file(src, e.lsn * iso.SECTOR, core.span(r.img, p)[0], 0, e.size), p
             assert validate.validate_folder(src, folder, log=quiet)
+            img = hostfs.FolderImage(folder)                       # the mods stay, the cut-off file was repaired
+            assert {p: hostfs.file_sha1(img.entries[p].host) for p in mods} == mods
+            assert has_mod(img.read_file(text_path))
+            assert img.entries[cut].size == d.img.entries[cut].size
+            assert rep.get("kept_texts") and rep["boot_hint"] is None
         finally:
             d.close()
             shutil.rmtree(folder, ignore_errors=True)
@@ -255,3 +287,156 @@ def test_gui_folder_flow(tmp_path, monkeypatch):
         if log.file:
             log.file.close()
         shutil.rmtree(folder, ignore_errors=True)
+
+
+def _text_mod(d, folder):
+    """Another mod changes one text (not a song name) in the folder's first string file. Returns (path, check)."""
+    from musickit import strtable
+    p = "/LANGUAGE/STRINGS/MAIN%s.BIN" % d.langs[0]
+    img = hostfs.FolderImage(folder)
+    t = strtable.StringTable(img.read_file(p))
+    h = next(h for h in sorted(t.entries) if h not in core.SONG_TEXT_HASHES and t.entries[h])
+    t.entries[h] = "Text Mod"
+    hostfs.write_files(folder, {p: t.build()})
+    return p, lambda data: strtable.StringTable(data).entries.get(h) == "Text Mod"
+
+
+def _elf_mod(elf):
+    """Another tool's change in the executable (one code word, PCSX2 CRC kept like the kits do). Returns (elf, address)."""
+    e = elfpatch.Elf(elf)
+    ph = e.phdrs()[0]
+    va = ph[2] + 0x200
+    e.w32(va, e.r32(va) ^ 0x00010000)
+    return elfpatch._fix_crc(e.d, elfpatch.crc(elf), len(e.d) > e.content_end()), va
+
+
+@needs_iso
+def test_other_mods_in_the_folder(tmp_path):
+    """Other mods in a folder: MusicKit's own earlier save may be replaced from the ISO; another mod's text is kept
+    (from the ISO and from the folder); another tool's executable change is kept from the folder and makes saving
+    the ISO there refuse; the validator only notes them."""
+    d = core.Disc(ISOS[0])
+    try:
+        folder = _mini_folder(d, str(tmp_path / "game"))
+        reps, _ = d.replacements(_changes(d.current_list()), normalize=False)
+        hostfs.write_files(folder, reps)                       # as an earlier MusicKit save from the ISO
+        assert d.check_folder(folder) is None
+        assert d.foreign_elf_changes(hostfs.FolderImage(folder).read_file(d.elf_path)) is None
+        # a text mod
+        p, has_mod = _text_mod(d, folder)
+        assert d.check_folder(folder) is None
+        assert d.other_texts(hostfs.FolderImage(folder)) == [p.split("/")[-1] + " (1 text)"]
+        reps, _ = d.replacements(d.current_list()[:-1], normalize=False)
+        kept = d.keep_folder_texts(folder, reps)
+        assert kept == [p.split("/")[-1] + " (1 text)"] and has_mod(reps[p])
+        f = core.Disc(folder)
+        reps_f, _ = f.replacements(_changes(f.current_list()), normalize=False)
+        assert has_mod(reps_f.get(p) or f.img.read_file(p))      # saving the folder into itself keeps it
+        # another tool's change in the executable
+        elf = hostfs.FolderImage(folder).read_file(d.elf_path)
+        mod, va = _elf_mod(elf)
+        hostfs.write_files(folder, {d.elf_path: mod})
+        problem = d.check_folder(folder)
+        assert "did not make" in problem and "open this folder as the source" in problem and hex(va + 2) in problem
+        f = core.Disc(folder)
+        reps_f, _ = f.replacements(_changes(f.current_list()), normalize=False)
+        assert elfpatch.crc(reps_f[d.elf_path]) == d.crc
+        new = elfpatch.Elf(reps_f[d.elf_path])
+        assert new.r32(va) == elfpatch.Elf(mod).r32(va)       # kept when saving the folder into itself
+        # the validator: notes, never failures
+        img = hostfs.FolderImage(folder)
+        small = min((k for k in d.img.entries if k not in d.changed_paths and k not in img.entries
+                     and d.img.entries[k].size < 200000), key=lambda k: d.img.entries[k].size)
+        hostfs.write_files(folder, {small: d.img.read_file(small) + b"mod", "/MODS/README.TXT": b"x"})
+        lines = []
+        n = validate.folder_notes(d, d.path, d.img, hostfs.FolderImage(folder), lines.append)
+        text = "\n".join(lines)
+        assert n == 4 and "FAIL" not in text and small.lstrip("/") in text and "MODS/README.TXT" in text
+        assert hex(va + 2) in text and "(1 text)" in text
+    finally:
+        d.close()
+
+
+@needs_iso
+def test_incomplete_folder(tmp_path, monkeypatch):
+    d = core.Disc(ISOS[0])
+    try:
+        folder = _mini_folder(d, str(tmp_path / "game"))
+    finally:
+        d.close()
+    monkeypatch.setattr(core, "REQUIRED", {"OVID": 5, "/IOP/GTFSHOST.IRX": 1})
+    with pytest.raises(ValueError, match="incompletely extracted") as e:
+        core.Disc(folder)
+    assert "OVID (missing)" in str(e.value) and "IOP/GTFSHOST.IRX" in str(e.value)
+
+
+@needs_iso
+def test_folders_made_by_other_tools(tmp_path):
+    """Lower-case names, the user's own ISO next to the files (Nahelam's guide), the game one level down, version
+    numbers in names."""
+    d = core.Disc(ISOS[0])
+    try:
+        folder = _mini_folder(d, str(tmp_path / "game"))
+        for root, dirs, files in os.walk(folder, topdown=False):         # lower-case names, as some extractors do
+            for n in files + dirs:
+                os.rename(os.path.join(root, n), os.path.join(root, n.lower()))
+        with open(os.path.join(folder, "My Game (Europe).iso"), "wb") as f:
+            f.write(b"\0" * 4096)
+        f = core.Disc(folder)
+        items = f.current_list()
+        items[0].title = "Lower Case Folder"
+        rep = f.build_folder(items, folder, normalize=False)
+        assert core.Disc(folder).songs[0].title == "Lower Case Folder"
+        names = [n for _, ds, fs in os.walk(folder) for n in ds + fs]
+        assert not [n for n in names if n != n.lower() and not n.endswith(".iso")]      # no second copies
+        assert "My Game (Europe).iso" in rep["boot_hint"] and core.GAME + " (HostFS).iso" in rep["boot_hint"]
+        assert "subfolder" in d.check_folder(str(tmp_path))
+        with pytest.raises(ValueError, match="subfolder"):
+            core.Disc(str(tmp_path))
+        os.rename(os.path.join(folder, "system.cnf"), os.path.join(folder, "system.cnf;1"))
+        with pytest.raises(ValueError, match="version number"):
+            core.Disc(folder)
+        assert "version number" in d.check_folder(folder)
+    finally:
+        d.close()
+
+
+def _hole_opened_by_another_tool(elf):
+    """The executable as ChainKit leaves it when it runs first: the .sndata hole opened like MusicKit does (segment 1
+    extended over it), its code + data at the top of the hole, the original song table and code."""
+    lay0 = elfpatch.Layout(elf)
+    e = elfpatch.Elf(elfpatch.patch(elf, elfpatch.ORIGINAL_SONGS))
+    orig = elfpatch.Elf(elf)
+    for va, _, t, _ in lay0.sites():
+        if t is not None:
+            e.w32(va, orig.r32(va))
+    o = e.file_offset(lay0.table_new)
+    e.d[o:o + 12 * elfpatch.MAX_SONGS] = bytes(12 * elfpatch.MAX_SONGS)
+    e.w32(lay0.playlist + 0x4C, lay0.table_old)
+    e.w32(lay0.hole_end - 0x100, 0xC0DEC0DE)                 # the other tool's data at the top of the hole
+    return elfpatch._fix_crc(e.d, elfpatch.crc(elf), True), lay0.hole_end - 0x100
+
+
+@needs_iso
+@pytest.mark.parametrize("src", ISOS)
+def test_songs_added_after_chainkit(src):
+    """MusicKit after ChainKit (ISO or folder): the hole is already open, MusicKit moves its table into its own part."""
+    d = core.Disc(src)
+    try:
+        other, mark = _hole_opened_by_another_tool(d.elf)
+        assert elfpatch.is_patched(other) and not elfpatch.has_song_table(other)
+        assert elfpatch.read_song_count(other) == elfpatch.ORIGINAL_SONGS
+        out = elfpatch.set_table(other, [7] * 45)
+        assert elfpatch.has_song_table(out) and elfpatch.read_song_count(out) == 45 and elfpatch.crc(out) == d.crc
+        assert elfpatch.Elf(out).r32(mark) == 0xC0DEC0DE
+        skip = elfpatch.own_ranges(other) + elfpatch.own_ranges(out)
+        assert hostfs.elf_changes(other, out, skip) == []          # nothing else changed
+        # the same table as MusicKit first, then the other tool: only the other tool's word differs
+        first = elfpatch.set_table(d.elf, [7] * 45)
+        assert hostfs.elf_changes(first, out) == [(mark, mark + 4)]
+        busy = elfpatch.Elf(other)
+        busy.w32(elfpatch.Layout(other).table_new + 8, 1)          # MusicKit's space used by something else
+        with pytest.raises(ValueError, match="used by another mod"):
+            elfpatch.set_table(bytes(busy.d), [7] * 45)
+    finally:
+        d.close()

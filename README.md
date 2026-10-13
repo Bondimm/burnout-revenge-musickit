@@ -104,8 +104,9 @@ Filesystem* then loads the game's files straight from that folder:
 - there is no disc size limit in a folder.
 
 PCSX2 only (not a real PS2). The Criterion games need a small PCSX2 cheat to read from a folder:
-**Nahelam's HostFS patches** — thanks to [Nahelam](https://github.com/Nahelam) for making them. MusicKit does not
-include that cheat; you download it once.
+**Nahelam's HostFS patches** ([PCSX2-HostFS-Patches](https://github.com/Nahelam/PCSX2-HostFS-Patches), folder
+[Criterion Games](https://github.com/Nahelam/PCSX2-HostFS-Patches/tree/main/Criterion%20Games)) — thanks to
+[Nahelam](https://github.com/Nahelam) for making them. MusicKit does not include that cheat; you download it once.
 
 ### Save into a folder
 1. Select your ISO in step 1 as usual and change the songs.
@@ -143,6 +144,32 @@ then refuses to save (nothing is changed) and tells you why; restart the game af
 works in a case-insensitive folder — on ext4 for example an empty folder with casefold switched on (`chattr +F`,
 needs a file system created with casefold support). MusicKit warns when the folder is case-sensitive but still lets
 you save and try. Windows and macOS (default file system) need nothing special.
+
+### Other mods in the same folder
+
+- **MusicKit + ChainKit:** both kits save into the same folder, **in either order**: save with one kit, then open
+  the folder in the other kit (step 1, **Folder...**, or `--iso "<folder>"`) and save there. Saving again later
+  in either kit keeps the other kit's changes (songs, supercharge settings, pop-up texts, arrow).
+- **Saving your ISO into a folder that already has the game** replaces only MusicKit's own changes from your ISO.
+  When another kit or mod changed the game executable there, MusicKit refuses (nothing is changed) and tells you
+  to open the folder instead (or to pick an empty folder to start again from your ISO).
+- **Other people's file mods** (replaced cars, textures, videos, extra files) are never touched: MusicKit writes only
+  the files it manages. Texts other mods changed in the game's text files are kept too. `validate` lists such
+  files as notes, not as errors.
+- **PCSX2 cheats** (widescreen and other patches) keep working: the game CRC stays the same. The per-game
+  *HostFS* cheat is only for the folder — **untick it** before you start a normal ISO of the same game
+  (with it on, the ISO does not start).
+- ChainKit's **PCSX2 cheat** (instead of a ChainKit folder) works together with a MusicKit folder too.
+- **Folders made by other tools** work: a folder extracted with 7-Zip, or set up as in Nahelam's guide (your own ISO
+  inside the folder). Start `Burnout Revenge (HostFS).iso` then — your own ISO in the folder still starts the game's
+  original executable, without MusicKit's changes to it. MusicKit explains what to do when names still end in `;1`
+  (extract again with 7-Zip), when you picked the folder above the game's files, or when files are missing (an
+  unfinished extraction: save from your ISO into the folder and the missing files are copied).
+
+Tested in PCSX2 2.8 (Europe discs, Burnout Revenge also USA): songs that exist only in the folder play from the folder
+in menus and races (the boot image holds only `SYSTEM.CNF` and the executable); MusicKit + ChainKit in both orders
+with supercharge, arrows and SUPERCHARGE LOST, a memory card save and the widescreen patch; other mods' files and
+texts stayed unchanged through every save.
 
 Command line ([optional](#command-line-optional)): `build --iso "Burnout Revenge (Europe).iso" --folder "<folder>"`
 saves into a folder; `--iso "<folder>"` opens one (it is then saved into itself); `validate "<your ISO>" "<folder>"`

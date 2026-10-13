@@ -26,7 +26,7 @@ import json
 import os
 import sys
 
-from . import core
+from . import core, hostfs
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_PROJECT = os.path.join(HERE, "musickit_project.json")
@@ -274,6 +274,8 @@ def main(argv=None):
             if problem:
                 raise SystemExit(problem)
             plan = d.folder_plan(folder)
+            if hostfs.case_warning(folder):
+                print("! " + hostfs.case_warning(folder))
             if plan["extract_bytes"]:
                 print("the game's files are copied into the folder first (%.2f GB)" % (plan["extract_bytes"] / 1e9))
             rep = d.build_folder(items, folder, normalize=not a.no_normalize, progress=_progress, unlock_off=unlock)
@@ -294,7 +296,11 @@ def main(argv=None):
         if folder:
             print("saved into %s (%d songs): %s" % (folder, rep["total_songs"],
                                                    ", ".join(p.lstrip("/") for p in rep["written"]) or "no file changed"))
+            if rep.get("kept_texts"):
+                print("kept another mod's texts in", ", ".join(rep["kept_texts"]))
             print("boot image:", rep["boot_iso"])
+            if rep.get("boot_hint"):
+                print("! " + rep["boot_hint"])
             print("Play it in PCSX2:")
             for line in d.hostfs_steps(folder):
                 print("  " + line)
