@@ -299,7 +299,22 @@ def test_build_iso_end_to_end():
     assert validate.validate(ISO, out, log=lambda *a: None)
     o = core.Disc(out)
     assert o.unlocked and o.count == d.count and not o.patched
+    # ChainKit's arrow texture in GLOBAL.TXD is accepted, any other changed file is not
+    tex = o.img.entries["/DATA/GLOBAL.TXD"]
+    other = next(e for k, e in sorted(o.img.entries.items())
+                 if k not in d.changed_paths and k not in validate.OTHER_KITS and e.size)
     o.img.f.close()
+
+    def flip(e):
+        with open(out, "r+b") as f:
+            f.seek(e.lsn * 2048 + e.size // 2)
+            b = f.read(1)
+            f.seek(-1, 1)
+            f.write(bytes([b[0] ^ 0xFF]))
+    flip(tex)
+    assert validate.validate(ISO, out, log=lambda *a: None)
+    flip(other)
+    assert not validate.validate(ISO, out, log=lambda *a: None)
     os.remove(out)
 
 

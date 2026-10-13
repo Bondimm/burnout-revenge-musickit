@@ -24,6 +24,16 @@ PNACH = {
 PNACH[0x7E83CC5B]["HostFS (Nahelam)"] = [0x44D230] + list(range(0x44D6AC, 0x44D6BC, 4)) + list(range(0x38A478, 0x38A534, 4))
 PNACH[0xD224D348]["HostFS (Nahelam)"] = [0x44D0B0] + list(range(0x44D52C, 0x44D53C, 4)) + list(range(0x38A2D0, 0x38A38C, 4))
 
+# Files the Burnout Revenge ChainKit rewrites in place (same size and LSN): a different content is not an error.
+OTHER_KITS = {"/DATA/GLOBAL.TXD": "ChainKit's arrow texture"}
+
+
+def _other_kit(k, log):
+    if k not in OTHER_KITS:
+        return False
+    log("note: %s differs from the source (%s)" % (k, OTHER_KITS[k]))
+    return True
+
 
 def _hash_file(img, e):
     h = hashlib.sha1()
@@ -94,8 +104,9 @@ def validate(src_path, out_path, log=print, hash_all=True):
             moved += 1
             ok = False
         elif hash_all and _hash_file(src, e) != _hash_file(out, o):
-            log("FAIL: %s content differs" % k)
-            ok = False
+            if not _other_kit(k, log):
+                log("FAIL: %s content differs" % k)
+                ok = False
         else:
             same += 1
     log("untouched files identical at original LSNs: %d/%d%s" % (same, len(src.entries) - len(CHANGED),
@@ -131,8 +142,9 @@ def validate_folder(src_path, folder, log=print, hash_all=True):
         if k in s0.changed_paths:
             continue
         if o.size != e.size or (hash_all and not hostfs.same_file(src_path, e.lsn * iso.SECTOR, o.host, 0, e.size)):
-            log("FAIL: %s differs from the disc" % k)
-            ok = False
+            if o.size != e.size or not _other_kit(k, log):
+                log("FAIL: %s differs from the disc" % k)
+                ok = False
         else:
             same += 1
     log("files identical to the disc: %d/%d%s" % (same, len(src.entries) - len(s0.changed_paths),
