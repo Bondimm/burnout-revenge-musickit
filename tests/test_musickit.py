@@ -161,6 +161,110 @@ def test_unlock_off():
         assert any(lo <= max(sites) < hi for lo, hi in elfpatch.touched_ranges(pu))
 
 
+def test_shuffle_list_room():
+    """The shuffle order list (one byte per song) must not run into other music manager fields, the song table or
+    the part of the .sndata hole ChainKit uses."""
+    assert elfpatch.manager_overlap(elfpatch.MANAGER_SHUFFLE, 51) == []
+    # the list kept in the manager is too small for more songs: from 52 songs on it overwrites the shuffle position,
+    # then the shuffle song count, the stream file name and the playlist copy
+    assert elfpatch.manager_overlap(elfpatch.MANAGER_SHUFFLE, 52) == ["shuffle position"]
+    assert len(elfpatch.manager_overlap(elfpatch.MANAGER_SHUFFLE, elfpatch.MAX_SONGS)) == 4
+    # moved list: after the song table and ChainKit's arrow texture copy (table + 0x480 .. + 0x7B8), before ChainKit's
+    # data (hole end - 0x3680 = table + 0x980), room for every song
+    assert elfpatch.MAX_SONGS * 12 <= 0x480 and 0x7B8 <= elfpatch.SHUFFLE_OFFSET
+    assert elfpatch.SHUFFLE_OFFSET + elfpatch.SHUFFLE_SIZE <= 0x980
+    assert elfpatch.MAX_SONGS <= min(elfpatch.SHUFFLE_SIZE, 256)
+
+
+def test_shuffle_list_moved():
+    vers = _elf_versions()
+    if not vers:
+        import pytest
+        pytest.skip("no executable")
+    for name, d, crc, playlist, table, *_ in vers:
+        assert elfpatch.shuffle_list(d) == ("manager", elfpatch.MANAGER_SHUFFLE)
+        out = elfpatch.set_table(d, [7] * elfpatch.MAX_SONGS)
+        lay = elfpatch.Layout(out)
+        assert elfpatch.shuffle_list(out) == ("hole", table + elfpatch.SHUFFLE_OFFSET), name
+        assert lay.hole_start <= table + 12 * 100 <= lay.shuffle and lay.shuffle + elfpatch.SHUFFLE_SIZE <= lay.hole_end
+        # no list access through the manager pointer is left in the shuffle functions (byte load / store at +0x0D)
+        for g in ("shuffle_fill", "shuffle_next"):
+            a, b = elfpatch.PAL_GROUPS[g]
+            words = [lay.elf.r32(va + lay.delta[g]) for va in range(a, b, 4)]
+            assert not [w for w in words if w >> 26 in (0x20, 0x24, 0x28) and w & 0xFFFF == 0x0D], (name, g)
+        # an executable patched by an older MusicKit version (list still in the manager) is caught and upgraded
+        e, o = elfpatch.Elf(out), elfpatch.Elf(d)
+        for va, pal, _, _ in lay.sites():
+            if pal in elfpatch.SHUFFLE_SITES:
+                e.w32(va, o.r32(va))
+        old = elfpatch._fix_crc(e.d, crc, appended=True)
+        assert elfpatch.shuffle_list(old) == ("manager", elfpatch.MANAGER_SHUFFLE)
+        assert elfpatch.manager_overlap(elfpatch.MANAGER_SHUFFLE, elfpatch.read_song_count(old))
+        up = elfpatch.set_table(old, [7] * elfpatch.MAX_SONGS)
+        assert elfpatch.shuffle_list(up) == ("hole", lay.shuffle) and elfpatch.crc(up) == crc and up == out, name
+
+
+# Addresses written by public PCSX2 patches for Burnout Revenge (pcsx2_patches: widescreen, 60 FPS, ...; Nahelam's
+# HostFS patches) and by ChainKit (the Burnout Chain mod: hooks, its data and code at the top of the .sndata hole,
+# its arrow texture copy), as [start, end) ranges per PCSX2 CRC. MusicKit must not write any of them.
+_HOSTFS = {0x7E83CC5B: [(0x38A478, 0x38A534), (0x44D230, 0x44D234), (0x44D6AC, 0x44D6BC)],
+           0xD224D348: [(0x38A2D0, 0x38A38C), (0x44D0B0, 0x44D0B4), (0x44D52C, 0x44D53C)]}
+_CHAINKIT = {
+    0x7E83CC5B: [(0x4A3B00, 0x4A3E38), (0x4A4000, 0x4A7680)] + [(a, a + 4) for a in (
+        0x114A9C, 0x11A2DC, 0x15DCE4, 0x15DCF4, 0x15DD0C, 0x15E3B8, 0x15E3BC, 0x15F09C, 0x1617B4, 0x1617B8, 0x16D358,
+        0x16FCFC, 0x16FD0C, 0x16FD1C, 0x16FD24, 0x16FDD8, 0x16FDE0, 0x16FDE4, 0x16FDE8, 0x16FED4, 0x16FEE8, 0x16FEEC,
+        0x16FEF4, 0x1DC924, 0x1DC944, 0x204E4C, 0x204E98, 0x2A3A98, 0x2A3A9C, 0x2A3E0C, 0x2A3E3C, 0x2A3EC4, 0x2A3EE8,
+        0x2A3EEC, 0x2A3F50, 0x2C8908, 0x2C890C)],
+    0xD224D348: [(0x4A3980, 0x4A3CB8), (0x4A3E80, 0x4A7500)] + [(a, a + 4) for a in (
+        0x114B54, 0x11A394, 0x15DD8C, 0x15DD9C, 0x15DDB4, 0x15E460, 0x15E464, 0x15F144, 0x16185C, 0x161860, 0x16D400,
+        0x16FDA4, 0x16FDB4, 0x16FDC4, 0x16FDCC, 0x16FE80, 0x16FE88, 0x16FE8C, 0x16FE90, 0x16FF7C, 0x16FF90, 0x16FF94,
+        0x16FF9C, 0x1DC8A4, 0x1DC8C4, 0x204DCC, 0x204E18, 0x2A3980, 0x2A3984, 0x2A3CF4, 0x2A3D24, 0x2A3DAC, 0x2A3DD0,
+        0x2A3DD4, 0x2A3E38, 0x2C87F0, 0x2C87F4)],
+}
+
+
+def _cheat_ranges():
+    from musickit import validate
+    out = {}
+    for c, cheats in validate.PNACH.items():
+        out[c] = [(a, a + 4) for name, addrs in cheats.items() if "HostFS" not in name for a in addrs]
+        out[c] += _HOSTFS[c]
+    return out
+
+
+def _overlaps(a, b):
+    return [(hex(lo), hex(hi)) for lo, hi in a for x, y in b if lo < y and x < hi]
+
+
+def test_no_overlap_with_pcsx2_patches_and_chainkit_static():
+    """PAL executable, from the address lists alone (no disc needed): every code word MusicKit can write, the
+    playlist words, the song table and the shuffle list."""
+    crc, playlist, table = 0x7E83CC5B, 0x460640, 0x4A3680
+    ours = [(pal, pal + 4) for pal, _, t, _ in elfpatch.CODE_PATCHES if t is not None]
+    ours += [(pal, pal + 4) for pal, _, _, _ in elfpatch.UNLOCK_PATCHES]
+    ours += [(playlist + 4, playlist + 8), (playlist + 0x4C, playlist + 0x50),
+             (table, table + elfpatch.MAX_SONGS * 12), (table + elfpatch.SHUFFLE_OFFSET, table + elfpatch.SHUFFLE_OFFSET + elfpatch.SHUFFLE_SIZE)]
+    assert _overlaps(ours, _cheat_ranges()[crc]) == []
+    assert _overlaps(ours, _CHAINKIT[crc]) == []
+
+
+def test_no_overlap_with_pcsx2_patches_and_chainkit():
+    vers = _elf_versions()
+    if not vers:
+        import pytest
+        pytest.skip("no executable")
+    cheats = _cheat_ranges()
+    for name, d, crc, playlist, table, *_ in vers:
+        out = elfpatch.unlock(elfpatch.set_table(d, [7] * elfpatch.MAX_SONGS))
+        lay = elfpatch.Layout(out)
+        assert _overlaps(elfpatch.touched_ranges(out), cheats[crc]) == [], name
+        # with ChainKit: every code word MusicKit changes, the song table and the shuffle list
+        ours = [(va, va + 4) for va, _, t, _ in lay.sites() if t is not None] + \
+               [(va, va + 4) for va, _, _, _ in lay.unlock_sites()] + \
+               [(table, table + elfpatch.MAX_SONGS * 12), (lay.shuffle, lay.shuffle + elfpatch.SHUFFLE_SIZE)]
+        assert _overlaps(ours, _CHAINKIT[crc]) == [], name
+
+
 def test_udf_tag_crc():
     _skip(ISO)
     img = iso.IsoImage(ISO)

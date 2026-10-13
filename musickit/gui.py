@@ -668,7 +668,7 @@ class MusicKitGui:
                   (d.region, d.count, " (%d added or changed earlier with MusicKit)" % (d.count - n_orig)
                   if d.count != n_orig else ""))
             if d.count > core.MAX_SONGS:
-                _text(YELLOW, "! More than %d songs: remove some before saving (shuffle mode "
+                _text(YELLOW, "! More than %d songs: remove some before saving (MusicKit "
                       "supports %d at most)." % (core.MAX_SONGS, core.MAX_SONGS))
             _text(GREY, "The ISO is only read; it is never modified.")
             _text(GREY, "PCSX2 game CRC %08X is kept, so PCSX2 patches (widescreen ...) still apply."

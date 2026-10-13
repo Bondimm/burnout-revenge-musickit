@@ -30,7 +30,7 @@ RWS_FILES = ("/TRACKS/_EATRAX0.RWS", "/TRACKS/_EATRAX1.RWS")
 SPLIT = 20
 MARK = b"MusicKit"     # first 8 bytes of the RWS segment UUID of songs MusicKit encoded
 MAX_TEXT = 60          # longest original title is 59 characters
-MAX_SONGS = elfpatch.MAX_SONGS   # 95: the shuffle order array limit (see elfpatch); also keeps the
+MAX_SONGS = elfpatch.MAX_SONGS   # 95 at most: keeps the
                                  # _EATRAX1.RWS header below 0x2000 bytes (the size MOVIES.RWS uses)
 DVD5_SECTORS = 2295104   # single-layer DVD (4,700,372,992 bytes)
 ADPCM_BYTES_PER_SEC = 32000 * 2 * 16 / 28    # stereo PS-ADPCM at 32 kHz (~36.6 KB/s)
