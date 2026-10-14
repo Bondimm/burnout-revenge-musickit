@@ -288,8 +288,9 @@ The game streams its music as **PS2 ADPCM, stereo, 32 kHz** — every song is co
 | mono | copied to both channels |
 | more than 2 channels | mixed down to stereo |
 
-Loudness is matched to the original EA Trax songs, so your songs are neither louder nor quieter than the rest
-(you can turn this off under *Options*). Titles, artists and albums can be up to 60 characters; characters the
+Loudness is matched to the original EA Trax songs with one fixed volume change, so your songs are neither louder
+nor quieter than the rest and their own dynamics stay untouched (a quiet song with very loud peaks stays a little
+quieter instead of clipping; you can turn matching off under *Options*). Titles, artists and albums can be up to 60 characters; characters the
 game's font does not have are replaced by the closest one (accents are kept).
 
 ## Command line (optional)

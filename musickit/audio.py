@@ -3,10 +3,11 @@
 Target format of EA Trax streams: PS-ADPCM, stereo, 32000 Hz (decoded quality ~ 16-bit, 32 kHz band limit
 16 kHz). Inputs are resampled with soxr (high precision) or, if the ffmpeg build lacks it, ffmpeg's own resampler with
 a long filter; mono is duplicated to both channels. Loudness is
-matched to the median integrated loudness (EBU R128 / LUFS) of the original songs with ffmpeg's two-pass
-loudnorm in linear mode (pure gain) plus a -1 dBTP ceiling.
+matched to the median integrated loudness (EBU R128 / LUFS) of the original songs: ffmpeg's loudnorm measures the
+song, then one constant gain is applied, lowered when needed to keep the peaks under -1 dBTP.
 """
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -149,15 +150,22 @@ def measure_loudness(pcm, rate):
 
 
 def loudnorm_filter(path, target_lufs, true_peak=-1.0):
-    """Two-pass ffmpeg loudnorm (linear = constant gain when possible)."""
+    """Measure the song (ffmpeg loudnorm: integrated loudness, true peak) and return one constant gain towards
+    `target_lufs`, lowered so the peaks stay under `true_peak` dBTP. loudnorm's own second pass is not used: when
+    the peaks do not fit it silently switches from linear to dynamic mode, which keeps changing the volume and makes
+    the song swell and fade in waves."""
     p = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", path, "-vn", "-af",
                         "loudnorm=I=%.1f:TP=%.1f:LRA=20:print_format=json" % (target_lufs, true_peak),
                         "-f", "null", "-"], capture_output=True, **_NO_WINDOW)
     err = p.stderr.decode("utf-8", "replace")
     j = json.loads(err[err.rindex("{"):err.rindex("}") + 1])
-    return ("loudnorm=I=%.1f:TP=%.1f:LRA=20:measured_I=%s:measured_TP=%s:measured_LRA=%s:measured_thresh=%s:"
-            "offset=%s:linear=true" % (target_lufs, true_peak, j["input_i"], j["input_tp"], j["input_lra"],
-                                       j["input_thresh"], j["target_offset"])), float(j["input_i"])
+    in_i, in_tp = float(j["input_i"]), float(j["input_tp"])
+    gain = target_lufs - in_i
+    if math.isfinite(in_tp):
+        gain = min(gain, true_peak - in_tp)
+    if not math.isfinite(gain):
+        gain = 0.0
+    return "volume=%.2fdB" % gain, in_i
 
 
 def prepare(path, target_lufs=None, normalize=True):

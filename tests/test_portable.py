@@ -126,6 +126,29 @@ def test_prepare_loudness_and_encode():
     assert _snr(pcm[:32000 * 3, 0], out[:, 0]) > 15
 
 
+def test_loudness_gain_is_constant(tmp_path):
+    """A quiet song with loud peaks gets one fixed gain (capped by the -1 dBTP ceiling), never a volume that keeps
+    changing (ffmpeg loudnorm's dynamic mode made such songs swell and fade in waves)."""
+    _need_ffmpeg()
+    import soundfile as sf
+    rate = 32000
+    t = np.arange(rate * 20) / rate
+    x = 0.05 * np.random.default_rng(1).standard_normal(t.size) * (1 + 0.5 * np.sin(2 * np.pi * 0.25 * t))
+    hits = (np.arange(t.size) % (rate // 2)) < 200
+    x[hits] = 0.9 * np.sign(np.sin(2 * np.pi * 100 * t[hits]))
+    path = str(tmp_path / "quiet_peaky.wav")
+    sf.write(path, np.stack([x, x], 1), rate, subtype="PCM_16")
+    filt, _ = audio.loudnorm_filter(path, -12.0)
+    assert filt.startswith("volume=") and "loudnorm" not in filt
+    pcm, _ = audio.prepare(path, target_lufs=-12.0)
+    y = pcm[:len(x), 0] / 32768.0
+    blk = rate // 4
+    gains = [20 * np.log10(np.sqrt(np.mean(y[i:i + blk][~hits[i:i + blk]] ** 2)) /
+                           np.sqrt(np.mean(x[i:i + blk][~hits[i:i + blk]] ** 2))) for i in range(blk, len(y) - blk, blk)]
+    assert max(gains) - min(gains) < 0.2
+    assert np.abs(y).max() < 10 ** (-0.8 / 20)
+
+
 def test_player_stops(monkeypatch):
     """The non-Windows preview player runs a stoppable background process (afplay on macOS)."""
     if sys.platform == "darwin":
