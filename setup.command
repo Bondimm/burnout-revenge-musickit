@@ -3,7 +3,7 @@
 # ffmpeg (Homebrew's if installed, otherwise a static build downloaded into ./ffmpeg/bin).
 # Safe to run again (repairs or updates the environment).
 # MUSICKIT_NO_PAUSE=1 (or CI=true) skips the final "Press Enter" prompt; MUSICKIT_FFMPEG_DOWNLOAD=1 downloads
-# ffmpeg even when one is installed already.
+# ffmpeg even when one is installed already (MUSICKIT_FFMPEG_DOWNLOAD=backup uses only the backup download).
 # MUSICKIT_PRIVATE_PYTHON=1 skips the installed Pythons and uses a private one (downloaded into ./.python).
 
 cd "$(dirname "$0")" || exit 1
@@ -225,13 +225,21 @@ have_ffmpeg() {
     return 1
 }
 
-# fetch <tool> <url> <tmpdir>: download a zip holding one macOS binary into ffmpeg/bin
+# fetch <tool> <url> <tmpdir>: download one macOS binary (in a .zip or a .gz) into ffmpeg/bin
 fetch() {
     local tool="$1" url="$2" tmp="$3" bin
     rm -rf "${tmp:?}/$tool" && mkdir -p "$tmp/$tool" || return 1
     echo "  $tool: $url"
-    curl -fL --retry 3 --connect-timeout 20 -sS -o "$tmp/$tool.zip" "$url" || return 1
-    unzip -o -q "$tmp/$tool.zip" -d "$tmp/$tool" || return 1
+    case "$url" in
+        *.gz)
+            curl -fL --retry 3 --connect-timeout 20 -sS -o "$tmp/$tool.gz" "$url" || return 1
+            gunzip -c "$tmp/$tool.gz" > "$tmp/$tool/$tool" || return 1
+            ;;
+        *)
+            curl -fL --retry 3 --connect-timeout 20 -sS -o "$tmp/$tool.zip" "$url" || return 1
+            unzip -o -q "$tmp/$tool.zip" -d "$tmp/$tool" || return 1
+            ;;
+    esac
     bin="$(find "$tmp/$tool" -type f -name "$tool" ! -path "*/__MACOSX/*" | head -n 1)"
     [ -n "$bin" ] || { echo "  no $tool in the download"; return 1; }
     file -b "$bin" | grep -q "Mach-O" || { echo "  the download is not a macOS program"; return 1; }
@@ -245,18 +253,21 @@ fetch() {
 }
 
 download_ffmpeg() {
-    local arch tmp ok=1 tool
+    local arch arch2 tmp ok=1 tool
     [ "$(uname -s)" = "Darwin" ] || return 1
-    arch="amd64"
+    arch="amd64" arch2="x64"
     if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
-        arch="arm64"
+        arch="arm64" arch2="arm64"
     fi
     tmp="$(mktemp -d "${TMPDIR:-/tmp}/musickit-ffmpeg.XXXXXX")" || return 1
     for tool in ffmpeg ffprobe; do
-        # static builds listed on ffmpeg.org: Martin Riedl (native arm64 + x86_64), evermeet.cx (x86_64; runs on
-        # Apple Silicon through Rosetta 2)
-        fetch "$tool" "https://ffmpeg.martin-riedl.de/redirect/latest/macos/$arch/release/$tool.zip" "$tmp" ||
-            fetch "$tool" "https://evermeet.cx/ffmpeg/getrelease/$tool/zip" "$tmp" || ok=0
+        # static builds (native arm64 + x86_64): Martin Riedl's latest release, backup: the ffmpeg-static
+        # project's GitHub release (ffmpeg 6.1.1)
+        if [ "${MUSICKIT_FFMPEG_DOWNLOAD:-}" != "backup" ]; then
+            fetch "$tool" "https://ffmpeg.martin-riedl.de/redirect/latest/macos/$arch/release/$tool.zip" "$tmp" && continue
+        fi
+        fetch "$tool" "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/$tool-darwin-$arch2.gz" \
+            "$tmp" || ok=0
     done
     rm -rf "$tmp"
     [ "$ok" = 1 ]

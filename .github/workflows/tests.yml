@@ -67,6 +67,17 @@ jobs:
           MUSICKIT_FFMPEG_DOWNLOAD: "1"
         run: ./setup.command
 
+      - name: Backup ffmpeg download (macOS)
+        if: runner.os == 'macOS'
+        env:
+          MUSICKIT_FFMPEG_DOWNLOAD: backup
+        run: |
+          mv ffmpeg ffmpeg-main
+          ./setup.command
+          file ffmpeg/bin/ffmpeg ffmpeg/bin/ffprobe
+          ffmpeg/bin/ffprobe -hide_banner -version | head -n 1
+          rm -rf ffmpeg && mv ffmpeg-main ffmpeg
+
       - name: Check the macOS launchers and ffmpeg
         if: runner.os == 'macOS'
         run: |
