@@ -685,7 +685,9 @@ class MusicKitGui:
 
     def ui_step2(self):
         self.step_header(2, "Add songs", bool(self.queue))
-        if imgui.button("Choose audio file...", imgui.ImVec2(200, 0)):
+        # at least 200 px wide (lined up with "Add song"), wider when the label needs it (large fonts / HiDPI)
+        choose_w = max(200, imgui.calc_text_size("Choose audio file...").x + 2 * imgui.get_style().frame_padding.x)
+        if imgui.button("Choose audio file...", imgui.ImVec2(choose_w, 0)):
             self.pick_audio()
         _tip("MP3, FLAC, WAV, OGG, M4A ... (anything ffmpeg reads). You can also drop files on the window.")
         imgui.same_line()
