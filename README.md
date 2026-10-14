@@ -11,10 +11,13 @@ the original ones included.
 - Works with your own disc image of **Burnout Revenge for PlayStation 2**:
   - Europe / PAL — `SLES-53507`
   - USA / NTSC — `SLUS-21242`
-- Your original image is **only read, never modified**; MusicKit writes a **new** `.iso`.
-- Songs: MP3, FLAC, WAV, OGG, M4A … (anything ffmpeg can read), up to 95 songs in total.
-- Add, replace, rename, remove and reorder songs — and reopen an image MusicKit made to keep editing it.
+- Your original image is **only read, never modified**; MusicKit writes a **new** `.iso` — or, for PCSX2, saves
+  into a **game folder** ([PCSX2 HostFS](#pcsx2-hostfs-folder-no-new-iso)), where later changes take seconds.
+- Songs: MP3, FLAC, WAV, OGG, M4A … (anything ffmpeg can read), up to **95 songs** in total.
+- Add, replace, rename, remove and reorder songs — and reopen an image (or folder) MusicKit made to keep editing it.
 - Optional: **Allow switching any song OFF** in the game's Song Manager (see [below](#allow-switching-any-song-off)).
+- Works together with [ChainKit](https://github.com/Bondimm/burnout-revenge-chainkit), **in either order** (see
+  [Combining mods](#combining-mods)).
 - The new image keeps the game's PCSX2 CRC (`7E83CC5B` PAL, `D224D348` USA), so **PCSX2 still recognises the game
   and applies its patches** (widescreen etc.).
 - **Tested in PCSX2:** adding songs with both the PAL and the USA version; replacing, renaming, removing and
@@ -33,12 +36,13 @@ the original ones included.
 ### Step 3 — Arrange the song list (optional)
 ![Step 3 - replace, rename, remove and reorder songs](docs/images/step3_song_list.png)
 
-### Step 4 — Save a new ISO
+### Step 4 — Save a new ISO (or a PCSX2 HostFS folder)
 ![Step 4 - save the new ISO](docs/images/step4_save.png)
 
 Before you save, MusicKit shows the size of the new image and how much more music still fits on a single-layer
 DVD (4.7 GB) — calculated from *your* image. If it would not fit, you see a warning; you can still save it (see
-[FAQ](#faq)).
+[FAQ](#faq)). For PCSX2 you can choose **Folder for PCSX2 HostFS** instead — see
+[PCSX2 HostFS folder](#pcsx2-hostfs-folder-no-new-iso).
 
 ### Step 5 — Play
 Load the new `.iso` in PCSX2 (or burn it / run it on your PS2) and open **Driver Details → EA Trax → Song Manager**.
@@ -49,9 +53,9 @@ Load the new `.iso` in PCSX2 (or burn it / run it on your PS2) and open **Driver
 
 ## Guides
 
-Nothing is written until you click **Save new ISO** — every change below is only collected in the song list
-(right side), which shows the soundtrack exactly as it will be on the new disc. **Undo all changes** goes back to
-the song list of the opened image.
+Nothing is written until you click **Save new ISO** (or **Save to folder**) — every change below is only collected
+in the song list (right side), which shows the soundtrack exactly as it will be on the new disc. **Undo all
+changes** goes back to the song list of the opened image.
 
 ### Add songs
 *Choose audio file…* (or drop files on the window), type title / artist / album, click **Add song**. New songs are
@@ -75,7 +79,8 @@ Use ▲ / ▼ to move a song. Moved songs are tagged *[was #N]* with their old p
 
 ### Reopen a MusicKit ISO and keep editing
 Select an image MusicKit made in step 1: its current song list is read back from the disc (added and replaced
-songs are recognised). Change it like any other image and save another **new** `.iso`.
+songs are recognised). Change it like any other image and save another **new** `.iso`. A HostFS folder is opened
+with **Folder...** instead and saved into itself.
 
 ### Allow switching any song OFF
 In the original game the Song Manager only lets you switch a song **OFF** after it has played to the end once —
@@ -98,25 +103,31 @@ you want and save your game.
 With PCSX2 you can also save your soundtrack into a **folder** instead of a new disc image. PCSX2's *Host
 Filesystem* then loads the game's files straight from that folder:
 
-- the first save copies the game's files from your ISO into the folder (once, about 2.5 GB);
+- the first save copies the game's files from your ISO into the folder (once, about 2.7 GB);
 - every later save only rewrites the files MusicKit changes (the song files, the song names and the game
   executable) — no new ISO each time, a save takes seconds;
-- there is no disc size limit in a folder.
+- there is no disc size limit in a folder;
+- **PCSX2 only** — a folder does not work on a real PS2.
 
-PCSX2 only (not a real PS2). The Criterion games need a small PCSX2 cheat to read from a folder:
+The Criterion games need a small PCSX2 cheat to read from a folder:
 **Nahelam's HostFS patches** ([PCSX2-HostFS-Patches](https://github.com/Nahelam/PCSX2-HostFS-Patches), folder
 [Criterion Games](https://github.com/Nahelam/PCSX2-HostFS-Patches/tree/main/Criterion%20Games)) — thanks to
 [Nahelam](https://github.com/Nahelam) for making them. MusicKit does not include that cheat; you download it once.
 
 ### Save into a folder
 1. Select your ISO in step 1 as usual and change the songs.
-2. In step 3 choose **Folder for PCSX2 HostFS** and pick an **empty folder** (or the folder of an earlier save).
+2. In step 3 choose **Folder for PCSX2 HostFS** and **Browse...** to an **empty folder** (or the folder of an
+   earlier save).
 3. Click **Save to folder**. MusicKit writes the game's files and a small boot image
-   `Burnout Revenge (HostFS).iso` into the folder (it holds only `SYSTEM.CNF` and the game executable and is rebuilt on
-   every save).
+   `Burnout Revenge (HostFS).iso` into the folder (it holds only `SYSTEM.CNF` and the game executable and is
+   rebuilt on every save).
+
+![Save into a PCSX2 HostFS folder](docs/images/hostfs_save.png)
 
 To change the songs again, open the folder in step 1 with **Folder...** (or click *Open this folder here* after
 saving) and save again — it is saved into itself. Your ISO is never changed.
+
+![After saving: open the folder again, and how to play it in PCSX2](docs/images/hostfs_saved.png)
 
 ### Play it in PCSX2 (once)
 1. Download the cheat for your version from
@@ -126,73 +137,89 @@ saving) and save again — it is saved into itself. Your ISO is never changed.
    - USA / NTSC (SLUS-21242): `SLUS-21242_D224D348_hostfs.pnach`
 
    Put it into PCSX2's `cheats` folder (PCSX2: *Tools → Open Data Directory*).
-2. Add your folder to PCSX2's game list (*Settings → Game List → Add...*, without recursive scan). It shows
-   `Burnout Revenge (HostFS).iso`.
+2. Add your folder to PCSX2's game list (*Settings → Game List → Add...*, without recursive scan). The game appears
+   as **Burnout Revenge**, only a few MB in size: that is the boot image `Burnout Revenge (HostFS).iso`.
 3. Right-click it → *Properties*: on the *Emulation* page switch on **Enable Host Filesystem**; on the *Cheats* page
    switch on **Enable Cheats** and tick **HostFS**.
-4. Start `Burnout Revenge (HostFS).iso`.
+4. Start it from the game list.
+
+![PCSX2: the folder in the game list, Enable Host Filesystem, Enable Cheats + HostFS](docs/images/pcsx2_hostfs.png)
 
 The game CRC stays the same, so PCSX2's widescreen patches and your other cheats still apply. MusicKit shows these
-steps after saving, too.
+steps after saving, too. As Nahelam notes, with the HostFS cheat the network configuration cannot be started from
+the game (save your network settings on the memory card first if you play online).
 
-As Nahelam notes, with the HostFS cheat the network configuration cannot be started from the game (save your network settings on the memory card first if you play online).
+- **Stop the game before you save** into its folder: the running game keeps its files open. On Windows MusicKit
+  then refuses to save (nothing is changed) and tells you why; restart the game after saving.
+- **Linux:** the game asks for its files in mixed letter case while the disc stores them in upper case. That only
+  works in a case-insensitive folder — on ext4 for example an empty folder with casefold switched on (`chattr +F`,
+  needs a file system created with casefold support). MusicKit warns when the folder is case-sensitive but still
+  lets you save and try. Windows and macOS (default file system) need nothing special.
 
-**Stop the game before you save** into its folder: the running game keeps its files open. On Windows MusicKit
-then refuses to save (nothing is changed) and tells you why; restart the game after saving.
+### Combining mods
 
-**Linux:** the game asks for its files in mixed letter case while the disc stores them in upper case. That only
-works in a case-insensitive folder — on ext4 for example an empty folder with casefold switched on (`chattr +F`,
-needs a file system created with casefold support). MusicKit warns when the folder is case-sensitive but still lets
-you save and try. Windows and macOS (default file system) need nothing special.
+- **MusicKit + ChainKit, in either order.** Save with one kit, then open *that* new ISO or folder in the other kit
+  and save there (a folder: step 1 **Folder...**, command line `--iso "<folder>"`). Saving again later in either
+  kit keeps the other kit's changes (songs, supercharge settings, pop-up texts, arrow). ChainKit's **PCSX2 cheat**
+  (instead of a ChainKit ISO or folder) works together with a MusicKit ISO or folder too.
+- **Saving again:** always open the folder (not your ISO) and save — only the changed files are rewritten.
+- **Your ISO into a folder that already has the game:** MusicKit replaces only its own changes from your ISO. If
+  another kit or mod changed the game executable there, MusicKit refuses (nothing is changed) and tells you to open
+  the folder instead — or pick an empty folder to start again from your ISO.
+- **Other mods are kept:** other people's file mods (replaced cars, textures, videos, extra files) are never
+  touched — MusicKit writes only the files it manages — and texts other mods changed in the game's text files
+  stay too. `validate` lists such files as notes, not as errors.
+- **PCSX2 cheats and patches** (widescreen etc.) keep working: the game CRC stays the same. The *HostFS* cheat is
+  only for the folder — **untick it** before you start a normal ISO of the same game (with it on, the ISO does not
+  start).
 
-### Other mods in the same folder
+<details>
+<summary><b>Folders made by other tools (7-Zip, Nahelam's guide) and what was tested</b></summary>
 
-- **MusicKit + ChainKit:** both kits save into the same folder, **in either order**: save with one kit, then open
-  the folder in the other kit (step 1, **Folder...**, or `--iso "<folder>"`) and save there. Saving again later
-  in either kit keeps the other kit's changes (songs, supercharge settings, pop-up texts, arrow).
-- **Saving your ISO into a folder that already has the game** replaces only MusicKit's own changes from your ISO.
-  When another kit or mod changed the game executable there, MusicKit refuses (nothing is changed) and tells you
-  to open the folder instead (or to pick an empty folder to start again from your ISO).
-- **Other people's file mods** (replaced cars, textures, videos, extra files) are never touched: MusicKit writes only
-  the files it manages. Texts other mods changed in the game's text files are kept too. `validate` lists such
-  files as notes, not as errors.
-- **PCSX2 cheats** (widescreen and other patches) keep working: the game CRC stays the same. The per-game
-  *HostFS* cheat is only for the folder — **untick it** before you start a normal ISO of the same game
-  (with it on, the ISO does not start).
-- ChainKit's **PCSX2 cheat** (instead of a ChainKit folder) works together with a MusicKit folder too.
-- **Folders made by other tools** work: a folder extracted with 7-Zip, or set up as in Nahelam's guide (your own ISO
-  inside the folder). Start `Burnout Revenge (HostFS).iso` then — your own ISO in the folder still starts the game's
-  original executable, without MusicKit's changes to it. MusicKit explains what to do when names still end in `;1`
-  (extract again with 7-Zip), when you picked the folder above the game's files, or when files are missing (an
-  unfinished extraction: save from your ISO into the folder and the missing files are copied).
+- A folder extracted with 7-Zip, or set up as in Nahelam's guide (your own ISO inside the folder), works. Start
+  `Burnout Revenge (HostFS).iso` then — your own ISO in the folder still starts the game's original executable,
+  without MusicKit's changes to it.
+- MusicKit explains what to do when names still end in `;1` (extract again with 7-Zip), when you picked the folder
+  above the game's files, or when files are missing (an unfinished extraction: save from your ISO into the folder
+  and the missing files are copied).
+- Tested in PCSX2 2.8 (Europe discs, Burnout Revenge also USA): songs that exist only in the folder play from the
+  folder in menus and races (the boot image holds only `SYSTEM.CNF` and the executable); MusicKit + ChainKit in
+  both orders with supercharge, arrows and SUPERCHARGE LOST, a memory card save and the widescreen patch; other
+  mods' files and texts stayed unchanged through every save.
 
-Tested in PCSX2 2.8 (Europe discs, Burnout Revenge also USA): songs that exist only in the folder play from the folder
-in menus and races (the boot image holds only `SYSTEM.CNF` and the executable); MusicKit + ChainKit in both orders
-with supercharge, arrows and SUPERCHARGE LOST, a memory card save and the widescreen patch; other mods' files and
-texts stayed unchanged through every save.
-
-Command line ([optional](#command-line-optional)): `build --iso "Burnout Revenge (Europe).iso" --folder "<folder>"`
-saves into a folder; `--iso "<folder>"` opens one (it is then saved into itself); `validate "<your ISO>" "<folder>"`
-checks a folder.
+</details>
 
 ## Requirements
 
 | What | Details |
 |---|---|
 | Operating system | Windows 10 or 11 (64-bit), macOS 14 Sonoma or newer (Apple Silicon or Intel), or 64-bit Linux (x86_64 or aarch64, glibc 2.28+; tested on Ubuntu 22.04 / 24.04) |
-| Python | any Python 3.12 or newer, or none at all — the setup picks an installed Python for which every package is available ready-made, or downloads a private Python 3.13 into the `.python` folder (no admin rights needed, about 100 MB) |
+| Python | Python 3.12 – 3.15 (64-bit), or none at all: the setup uses an installed Python for which every package is available ready-made, otherwise it downloads a private Python 3.13 into the `.python` folder (no admin rights needed, about 100 MB) |
 | Python packages | installed automatically by `setup.bat` / `setup.command` / `setup.sh` into a private `.venv`: numpy, numba, glfw, PyOpenGL, imgui-bundle, Pillow, soundfile, pyloudnorm, pycdlib, pytest (see [requirements.txt](requirements.txt)) |
 | ffmpeg | downloaded automatically by `setup.bat` / `setup.command` / `setup.sh` (or install it yourself: Windows `winget install Gyan.FFmpeg`, macOS `brew install ffmpeg`, Linux your package manager, e.g. `sudo apt install ffmpeg`) |
 | Graphics | any GPU with OpenGL 3.3 (for the MusicKit window) |
-| Disk space | about 5 GB free for the new disc image (~4.2 GB) plus ~1 GB for Python packages and ffmpeg |
+| Disk space | about 5 GB free for the new disc image (~4.2 GB) — or about 3 GB for a HostFS folder — plus ~1 GB for Python packages and ffmpeg |
 | The game | your own disc image (.iso) of Burnout Revenge for PS2: PAL `SLES-53507` or USA `SLUS-21242` |
 | Internet | only once, during `setup.bat` / `setup.command` / `setup.sh` |
 
+### What the setup does
+The setup scripts never compile anything and change nothing outside the MusicKit folder:
+
+1. They look for an installed 64-bit Python (3.12 – 3.15) and use the first one for which **every** package is
+   available ready-made, in a private environment `.venv`.
+2. If there is no Python, or none can install the packages (e.g. a brand-new Python 3.15 before the packages have
+   caught up), they download a **private Python 3.13** into the `.python` folder with
+   [uv](https://astral.sh/uv) (download checked against a checksum) and use that one.
+3. They get **ffmpeg** (an installed one is used when present).
+
+Run the setup again at any time: it updates the packages, or rebuilds `.venv` if it no longer works (e.g. after
+you removed the Python it was made with). `MUSICKIT_PRIVATE_PYTHON=1` makes it skip the installed Pythons.
+
 ## Installation (Windows 10 / 11)
 
-1. Optional: install **Python 3.12 or newer** from <https://www.python.org/downloads/> (tick *"Add python.exe to PATH"*).
-   Without it, or when your Python is too new for some packages (e.g. a fresh 3.15), `setup.bat` downloads a
-   private Python into the `.python` folder by itself.
+1. Optional: install **Python 3.12 – 3.15** from <https://www.python.org/downloads/> (tick *"Add python.exe to
+   PATH"*). Without it, `setup.bat` downloads a private Python by itself (see
+   [What the setup does](#what-the-setup-does)).
 2. Download this repository (green **Code** button → *Download ZIP*) and unpack it, or `git clone` it.
 3. Double-click **`setup.bat`** once. It creates a private Python environment in `.venv` and downloads
    **ffmpeg** into the `ffmpeg` folder (used to read MP3/FLAC/OGG/… files). Nothing is installed system-wide.
@@ -204,9 +231,9 @@ checks a folder.
 
 For Apple Silicon (M1 and newer) and Intel Macs with macOS 14 Sonoma or newer.
 
-1. Optional: install **Python 3.12 or newer** from <https://www.python.org/downloads/macos/> (or with
-   [Homebrew](https://brew.sh): `brew install python`). Without it, or when your Python is too new for some
-   packages, `setup.command` downloads a private Python into the `.python` folder by itself.
+1. Optional: install **Python 3.12 – 3.15** from <https://www.python.org/downloads/macos/> (or with
+   [Homebrew](https://brew.sh): `brew install python`). Without it, `setup.command` downloads a private Python by
+   itself (see [What the setup does](#what-the-setup-does)).
 2. Download this repository (green **Code** button → *Download ZIP*) and unpack it, or `git clone` it.
 3. Double-click **`setup.command`** once. It opens a Terminal window, creates a private Python environment in
    `.venv` and downloads **ffmpeg** into the `ffmpeg` folder (an ffmpeg installed with Homebrew is used instead
@@ -229,9 +256,9 @@ For Apple Silicon (M1 and newer) and Intel Macs with macOS 14 Sonoma or newer.
 For 64-bit Linux on x86_64 or aarch64 (glibc 2.28 or newer; Alpine / musl is not supported). Tested in CI on
 Ubuntu 22.04 and 24.04 (x86_64); other distributions (Debian, Fedora, Arch, openSUSE, Mint, ...) should work the same way.
 
-1. Install the system packages. Python is optional: `./setup.sh` uses an installed Python 3.12 or newer (on
-   Debian / Ubuntu with its separate `venv` package) and otherwise downloads a private Python into the `.python`
-   folder by itself:
+1. Install the system packages. Python is optional: `./setup.sh` uses an installed Python 3.12 – 3.15 (on
+   Debian / Ubuntu with its separate `venv` package) and otherwise downloads a private Python by itself (see
+   [What the setup does](#what-the-setup-does)):
    - Debian / Ubuntu / Mint: `sudo apt install python3 python3-venv python3-pip libgl1 libegl1 libxkbcommon0 zenity`
    - Fedora: `sudo dnf install python3 python3-pip mesa-libGL mesa-libEGL libxkbcommon zenity`
    - Arch / Manjaro: `sudo pacman -S python python-pip mesa libglvnd libxkbcommon zenity`
@@ -240,9 +267,9 @@ Ubuntu 22.04 and 24.04 (x86_64); other distributions (Debian, Fedora, Arch, open
      on KDE) is used for the file and folder dialogs; without it, the dialogs do not open. The GLFW and
      imgui-bundle wheels bring everything else. A sound player (`paplay`, `aplay` or `ffplay`) is used for previews.
 2. Download this repository (green **Code** button → *Download ZIP*) and unpack it, or `git clone` it.
-3. Open a terminal in the folder and run **`./setup.sh`** once. It creates a private Python environment in `.venv` and downloads **ffmpeg** into the `ffmpeg` folder (an ffmpeg installed with your package manager is used instead
-   when present).
-   Nothing is installed system-wide. If you get *"Permission denied"*, run `chmod +x *.sh` first.
+3. Open a terminal in the folder and run **`./setup.sh`** once. It creates a private Python environment in `.venv`
+   and downloads **ffmpeg** into the `ffmpeg` folder (an ffmpeg installed with your package manager is used instead
+   when present). Nothing is installed system-wide. If you get *"Permission denied"*, run `chmod +x *.sh` first.
    - If the ffmpeg download fails, install ffmpeg with your package manager (`sudo apt install ffmpeg`, `sudo dnf install ffmpeg`,
      `sudo pacman -S ffmpeg`), then run `./setup.sh` again.
 4. Start **`./MusicKit.sh`** and keep the terminal open while you use MusicKit. Settings and the log (`gui.log`) are kept in
@@ -283,7 +310,9 @@ something).
 | forget all pending changes | `reset` |
 | save the new image | `build --iso "Burnout Revenge (Europe).iso" --out "Burnout Revenge (MusicKit).iso"` |
 | … and allow switching any song OFF | add `--unlock-off` to `build` (also works without any other change) |
-| check a new image | `validate "Burnout Revenge (Europe).iso" "Burnout Revenge (MusicKit).iso"` |
+| save into a PCSX2 HostFS folder instead | `build --iso "Burnout Revenge (Europe).iso" --folder "<folder>"` |
+| change the songs of a folder again | `--iso "<folder>"` with `list`, `replace`, … and `build` (saved into itself) |
+| check a new image / a folder | `validate "Burnout Revenge (Europe).iso" "Burnout Revenge (MusicKit).iso"` · `validate "Burnout Revenge (Europe).iso" "<folder>"` |
 
 `remove` (without `-song`) removes a queued *new* song; `remove-song` removes a song from the disc.
 
@@ -297,8 +326,8 @@ also tells you whether the image fits on a single-layer DVD.
 image — it simply is not the original pressing anymore. It does not affect the game or PCSX2 patches: the game CRC
 (shown in PCSX2's game properties) stays the same.
 
-**Can I change the songs again later?** Yes. Open the image MusicKit made and add, replace, rename, remove or
-reorder songs; MusicKit reads the current song list back from that image.
+**Can I change the songs again later?** Yes. Open the image (or folder) MusicKit made and add, replace, rename,
+remove or reorder songs; MusicKit reads the current song list back from it.
 
 **Will my save game still work?** Yes. Adding songs, replacing audio and renaming keep every Song Manager setting
 where it is; new songs default to *ALL* (menus and races). Removing or moving songs shifts the saved settings of
@@ -306,13 +335,17 @@ positions 1–41 — see [Save games](#save-games-removing-or-reordering-songs).
 
 **How many songs can the disc have?** From 1 up to 95 songs in total.
 
-**My songs don't show up.** Make sure you started the *new* `.iso`. Added songs are at the end of the Song Manager
-list unless you moved them.
+**My songs don't show up.** Make sure you started the *new* `.iso` (or, for a folder, the `(HostFS).iso` with Host
+Filesystem and the HostFS cheat switched on). Added songs are at the end of the Song Manager list unless you moved
+them.
+
+**My normal ISO does not start any more.** The *HostFS* cheat is still ticked for this game: untick it in the
+game's *Properties → Cheats* (it is only for the folder).
 
 **Why does MusicKit warn that my image is too big to burn?** A normal (single-layer) DVD holds 4.7 GB. With a lot
 of added or long songs the new image can get bigger than that. It still works in emulators such as PCSX2, but it
 cannot be burned to a normal DVD for a real PS2 — remove or shorten songs until the warning is gone if you want
-to burn it.
+to burn it. A HostFS folder has no size limit.
 
 **I can't switch some original songs OFF.** That is how the original game works: a song can only be switched OFF
 after it has played to the end once. Songs added with MusicKit are never locked. To lift the lock for every song,
@@ -323,13 +356,15 @@ game CRC stays the same.
 
 - [Burnout 3: Takedown MusicKit](https://github.com/Bondimm/burnout3-takedown-musickit) — the same for Burnout 3: Takedown (PS2).
 - [Burnout Dominator MusicKit](https://github.com/Bondimm/burnout-dominator-musickit) — the same for Burnout Dominator (PS2).
-- [Burnout Revenge ChainKit](https://github.com/Bondimm/burnout-revenge-chainkit) — Burnout Dominator's supercharge and Burnout chain for Burnout Revenge (PS2).
+- [Burnout Revenge ChainKit](https://github.com/Bondimm/burnout-revenge-chainkit) — Burnout Dominator's supercharge and Burnout chain for Burnout Revenge (PS2); works together with this MusicKit.
 
 ## Thanks
 
 - porkuskorpz ([GitHub](https://github.com/porkuskorpz), [Reddit u/porkuskorpz](https://www.reddit.com/user/porkuskorpz/))
   for in-game testing and the detailed report that
   led to the *Allow switching any song OFF* option.
+- [Nahelam](https://github.com/Nahelam) for the
+  [PCSX2 HostFS patches](https://github.com/Nahelam/PCSX2-HostFS-Patches) that make the folder mode possible.
 
 ## Legal
 
@@ -346,7 +381,8 @@ game CRC stays the same.
 - **Bring your own game.** You need your own, legally obtained copy of Burnout Revenge and must create the disc
   image from it yourself. MusicKit does not bypass any copy protection; it only edits a copy of your own image.
 - **Do not share modified disc images.** Disc images contain the game, which is copyrighted by Electronic Arts.
-  Uploading or distributing them — modified or not — is not allowed.
+  Uploading or distributing them — modified or not — is not allowed. The same goes for HostFS game folders: they
+  hold the game's files.
 - **Music rights.** Songs belong to their artists and labels. Only add music you are allowed to use, keep your
   modified image for personal use, and do not distribute images or files that contain other people's music.
 - **No warranty.** The software is provided "as is", without warranty of any kind (see [LICENSE](LICENSE)).
